@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//c/Users/mcucc/**)",
+      "Read(//c/ProgramData/**)",
+      "Read(//c/Users/mcucc/AppData/**)"
+    ]
+  }
+}
