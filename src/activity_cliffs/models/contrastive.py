@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 import torch
 from rdkit import Chem, DataStructs
-from rdkit.Chem import AllChem
+from rdkit.Chem import rdFingerprintGenerator
 from sklearn.metrics import average_precision_score, roc_auc_score
 from sklearn.model_selection import GroupShuffleSplit
 from torch import nn
@@ -18,7 +18,8 @@ def _ecfp4_numpy(smiles: str, *, n_bits: int = 2048) -> np.ndarray | None:
     mol = Chem.MolFromSmiles(smiles)
     if mol is None:
         return None
-    fp = AllChem.GetMorganFingerprintAsBitVect(mol, radius=2, nBits=n_bits, useChirality=True)
+    gen = rdFingerprintGenerator.GetMorganGenerator(radius=2, fpSize=n_bits, includeChirality=True)
+    fp = gen.GetFingerprint(mol)
     arr = np.zeros((n_bits,), dtype=np.float32)
     DataStructs.ConvertToNumpyArray(fp, arr)
     return arr

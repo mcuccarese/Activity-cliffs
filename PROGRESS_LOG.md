@@ -20,20 +20,23 @@
 | End-to-end demo | `scripts/run_demo.py` | ✅ Written |
 | Target browser | `scripts/list_targets.py` | ✅ Written |
 | Demo notebook | `notebooks/activity_cliffs_demo.ipynb` | ✅ Written |
-| **Real data run** | Any `outputs/` artifacts | ❌ Never executed |
+| **MMP extraction** | `src/activity_cliffs/data/mmp.py` | ✅ M2 — done |
+| **MMP corpus (50 targets)** | `outputs/mmps/all_mmps.parquet` | ✅ M3 — done |
+| **Real data run** | `outputs/demo/CHEMBL203/` | ✅ EGFR complete (M1) |
 
 ---
 
-## Milestone Map (revised 2026-03-16 after full code review)
+## Milestone Map (revised 2026-03-17 — reframed around generalized Topliss / ShinkaEvolve)
 
 | # | Milestone | Status | Est. sessions |
 |---|---|---|---|
-| M1 | Env setup + ChEMBL data + target selection | 🔄 In progress | current |
-| M2 | First end-to-end run on 1 target, review outputs | 🔲 Not started | 1 |
-| M3 | Add molecule-level cliff propensity (k-NN scoring) | 🔲 Not started | 1 |
-| M4 | Add MMP analysis on cliff pairs (most actionable feature) | 🔲 Not started | 1-2 |
-| M5 | Contrastive model training + checkpoint saving | 🔲 Not started | 1 |
-| M6 | Atom attribution + fragment enrichment analysis | 🔲 Not started | 2-3 |
+| M1 | Env setup + ChEMBL + EGFR end-to-end run | ✅ Done | — |
+| M2 | MMP extraction module + validate on EGFR | ✅ Done | — |
+| M3 | Scale MMP extraction to 50 targets, build transformation corpus | ✅ Done | — |
+| M4 | Feature engineering: transformation features, context features, pre-cache | 🔲 | 1-2 |
+| M5 | ShinkaEvolve integration: template + fitness evaluator + first evolution | 🔲 | 1-2 |
+| M6 | Analysis: read evolved programs, incorporate domain insight, iterate | 🔲 | 2-3 |
+| M7 | Recommendation interface: "paste a molecule, get ranked modifications" | 🔲 | 1 |
 
 ---
 
@@ -44,45 +47,41 @@
 | 2026-03-16 | Installed Miniforge3 + initialized conda for PowerShell | conda works in PowerShell |
 | 2026-03-16 | `conda env create -f environment.yml` + `pip install -e .` | `activity-cliffs` env active, package installed |
 | 2026-03-16 | Smoke test | PyTorch + RDKit + activity_cliffs all import cleanly |
+| 2026-03-17 | Downloaded ChEMBL 36 SQLite | `D:\Mike project data\...\chembl_36.db` |
+| 2026-03-17 | Fixed `chembl.py` for ChEMBL 36 schema (`chembl_id` vs `target_chembl_id`) | SQL queries work |
+| 2026-03-17 | Listed top 30 targets, selected **EGFR (CHEMBL203)** | 18,897 activities, 10,566 compounds |
+| 2026-03-17 | EGFR end-to-end run (run_demo.py) | 1,693 pairs, 97 cliffs (5.7%), baseline ROC 0.63, contrastive ROC 0.74 |
+| 2026-03-17 | Fixed RDKit MorganFP deprecation warnings (→ `rdFingerprintGenerator`) | Clean runs |
+| 2026-03-17 | Full code review (Opus) | No blocking bugs. Reframed project toward generalized Topliss / ShinkaEvolve |
+| 2026-03-17 | M2: MMP extraction module (mmp.py + extract_mmps.py) | 1,125,316 MMPs from EGFR; 6,613 unique cores; 334,830 cliff MMPs (29.8%); rdMMPA API fix needed (output format: empty core, fragments in t[1] as 'core.rgroup') |
+| 2026-03-17 | M2b: Transformation enrichment analysis (Opus) | Meta-haloanilines are top potency boosters (I>Cl>F, reflecting hinge H-bond + hydrophobic pocket); NO2/tBu/NMe2 kill potency; simple descriptors explain <3% variance — context features critical for ShinkaEvolve |
+| 2026-03-17 | M3: Scale MMP extraction to 50 Homo sapiens targets | **25,182,966 total MMPs**; 50 targets; cliff rates 11–35%; all saved to `outputs/mmps/`; combined at `outputs/mmps/all_mmps.parquet` |
 
 ---
 
 ## Current Status
 
-**2026-03-16** — M1 env portion complete. **Next: download ChEMBL SQLite (~4 GB).** CUDA not yet verified.
+**2026-03-17** — M3 complete. 25,182,966 MMPs across 50 Homo sapiens targets. Combined corpus at `outputs/mmps/all_mmps.parquet`. Cliff rates range from 11% (P2X3/CHEMBL2998) to 35% (AChE/CHEMBL220). Top transforms already hint at target-class patterns: HDAC hydroxamic acid→o-phenylenediamine zinc-binding group swap; AChE chain-length series; IRAK4 gem-difluoro cyclohexyl fluorination; Nav9 thiadiazole ring variants. Ready for M4: feature engineering.
 
 ---
 
 ## Next Steps
 
-### ~~Step 1 — Create the conda environment~~ ✅ DONE 2026-03-16
-
----
-
-### Step 2 — Download ChEMBL and point the project at it
-**When:** After Step 1 succeeds.
-**Model:** None — this is a download task.
-
-1. Go to [https://chembl.gitbook.io/chembl-interface-documentation/downloads](https://chembl.gitbook.io/chembl-interface-documentation/downloads) and download the **SQLite** version of the latest ChEMBL release (e.g., `chembl_34_sqlite.tar.gz`, ~4 GB compressed).
-2. Extract it — you'll get a file like `chembl_34.db` or `chembl_34.sqlite`.
-3. In PowerShell (run once, persists across sessions):
-   ```powershell
-   setx CHEMBL_SQLITE_PATH "C:\path\to\chembl_34.sqlite"
-   ```
-   Replace the path with where you actually saved the file. Close and reopen your terminal after running this.
-
-**Success signal:** Running `echo $env:CHEMBL_SQLITE_PATH` in PowerShell prints the path.
-
----
-
-### Step 3 (coming after Steps 1–2) — Browse targets and pick one
-**Model:** **Sonnet**
+### Step: M4 — Feature engineering
+**Model:** **Sonnet** (implementation) — consult Opus first if architecture decisions needed
 **Prompt to use:**
 ```
-I've set up the conda environment and downloaded ChEMBL. I want to run the list_targets script to see the best targets for activity cliff mining. The project is at C:\Users\mcucc\Projects\Activity cliffs.
-
-Please show me the exact command to run and explain what the output columns mean so I can pick a good starting target. I'm looking for a human target with at least a few hundred IC50 measurements, ideally a kinase or GPCR.
+Build the feature engineering module at src/activity_cliffs/features/mmp_features.py. For each MMP row in all_mmps.parquet, compute:
+1. Transformation features: ΔMW, ΔLogP, ΔTPSA, ΔHBDonors, ΔHBAcceptors, ΔRotBonds, Δheavy atom count (from R-group SMILES using rdkit.Chem.Descriptors)
+2. R-group features: Morgan FP (radius=2, nBits=256) for rgroup_from and rgroup_to
+3. Attachment environment: atom environment hash at the cut bond (Morgan info at radius 1-2 around [*:1] in core_smiles)
+Save as a parquet file outputs/features/mmp_features.parquet with the same index as all_mmps.parquet.
+Validate on the EGFR subset (target_chembl_id == 'CHEMBL203') and print feature summary stats.
 ```
+
+**Key M2b insight:** Context features (attachment environment) are essential — simple delta-descriptors explain <3% of cliff variance. The attachment environment hash is the most important feature to get right.
+
+### After M4: M5 — ShinkaEvolve integration (Opus for design, Sonnet for implementation)
 
 ---
 
@@ -110,11 +109,33 @@ Start with defaults. Only tune after seeing the first output metrics.
 
 ---
 
-## Known Gaps (prioritized by impact for medchem)
+## Project Vision (revised 2026-03-17)
 
-1. **MMP analysis** — Not implemented. The single highest-value addition. Would show *which specific R-group swaps cause cliffs* across series. RDKit `rdMMPA` supports this.
-2. **Molecule-level cliff propensity** — Not implemented. Would let you score individual candidate SMILES for cliff risk via k-NN over mined data.
-3. **Model persistence** — Contrastive encoder trains but never saves weights. Can't reload to score new compounds.
-4. **Atom-level attribution** — Not implemented. Integrated gradients on the MLP would show which atoms drive cliff predictions.
-5. **MLP-only, no GNN** — Fine for prototype. GNN (PyTorch Geometric) would enable richer atom attribution but adds complexity.
-6. **No Streamlit app** — Notebooks are the right interface for now.
+**Goal: A data-driven, generalized Topliss tree.** Given any starting compound and any target, recommend which structural modifications to test first to most efficiently discover steep SAR (activity cliffs).
+
+**Architecture:**
+1. **Data layer:** MMP extraction from ChEMBL (50-100 targets) → millions of (core, R-group swap, target, ΔpActivity) tuples
+2. **Feature layer:** Transformation features (Δ-descriptors, attachment environment, R-group properties), context features (scaffold rigidity, pharmacophore proximity)
+3. **Discovery layer:** ShinkaEvolve evolves interpretable Python scoring functions, evaluated by leave-one-target-out NDCG@k
+4. **Application layer:** Paste a molecule → get ranked modification suggestions
+
+**Why this matters:** Topliss encoded σ and π for phenyl substitution manually in 1972. We're learning the equivalent rules from all of medicinal chemistry, for any scaffold and any changeable motif. The evolved scoring functions ARE the scientific discovery — readable, interpretable, generalizable.
+
+---
+
+## M2 Design: MMP Extraction
+
+**Module:** `src/activity_cliffs/data/mmp.py`
+**Script:** `scripts/extract_mmps.py`
+**Method:** `rdMMPA.FragmentMol` with `maxCuts=1` (single-cut, acyclic bonds only)
+**Algorithm:** Fragment all molecules → group by canonical core → pair within groups → record transformation
+**Output:** Parquet with core_smiles, rgroup_from, rgroup_to, transform_smarts, delta_pActivity
+**Scale control:** Cap group size at 200 molecules per core
+
+---
+
+## Known Gaps
+
+1. **Model persistence** — Contrastive encoder doesn't save weights. Low priority given project reframe.
+2. **Atom-level attribution** — Not yet implemented. May become relevant in M6 analysis.
+3. **No GNN** — Fine for now. Graph-level features may be useful in M4 featurization.

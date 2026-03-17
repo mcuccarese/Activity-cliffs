@@ -6,7 +6,7 @@ from typing import Dict, Tuple
 import numpy as np
 import pandas as pd
 from rdkit import Chem, DataStructs
-from rdkit.Chem import AllChem
+from rdkit.Chem import rdFingerprintGenerator
 from sklearn.linear_model import LogisticRegression, Ridge
 from sklearn.metrics import average_precision_score, mean_absolute_error, roc_auc_score
 from sklearn.model_selection import GroupShuffleSplit
@@ -16,7 +16,8 @@ def _ecfp4_bitvect(smiles: str, *, n_bits: int = 2048) -> DataStructs.cDataStruc
     mol = Chem.MolFromSmiles(smiles)
     if mol is None:
         return None
-    return AllChem.GetMorganFingerprintAsBitVect(mol, radius=2, nBits=n_bits, useChirality=True)
+    gen = rdFingerprintGenerator.GetMorganGenerator(radius=2, fpSize=n_bits, includeChirality=True)
+    return gen.GetFingerprint(mol)
 
 
 def bitvect_to_numpy(fp: DataStructs.cDataStructs.ExplicitBitVect) -> np.ndarray:

@@ -5,7 +5,8 @@ from typing import Iterable, Optional
 
 import numpy as np
 from rdkit import Chem, DataStructs
-from rdkit.Chem import AllChem, Descriptors
+from rdkit.Chem import Descriptors
+from rdkit.Chem import rdFingerprintGenerator
 
 
 @dataclass(frozen=True)
@@ -26,7 +27,8 @@ def smiles_to_mols(smiles: Iterable[str]) -> list[Optional[Chem.Mol]]:
 def ecfp4_bitvect(
     mol: Chem.Mol, *, n_bits: int = 2048, use_chirality: bool = True
 ) -> DataStructs.cDataStructs.ExplicitBitVect:
-    return AllChem.GetMorganFingerprintAsBitVect(mol, radius=2, nBits=n_bits, useChirality=use_chirality)
+    gen = rdFingerprintGenerator.GetMorganGenerator(radius=2, fpSize=n_bits, includeChirality=use_chirality)
+    return gen.GetFingerprint(mol)
 
 
 def featurize_ecfp4(

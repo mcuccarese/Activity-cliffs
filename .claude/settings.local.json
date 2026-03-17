@@ -3,7 +3,21 @@
     "allow": [
       "Read(//c/Users/mcucc/**)",
       "Read(//c/ProgramData/**)",
-      "Read(//c/Users/mcucc/AppData/**)"
+      "Read(//c/Users/mcucc/AppData/**)",
+      "Read(//d/**)",
+      "Bash(python -c *)",
+      "Bash(python -m scripts.*)",
+      "Bash(\"c:/Users/mcucc/miniforge3/envs/activity-cliffs/python\" *)",
+      "Bash(pip install *)",
+      "Bash(conda *)",
+      "Bash(git status*)",
+      "Bash(git diff*)",
+      "Bash(git log*)",
+      "Bash(git add *)",
+      "Bash(ls *)",
+      "Bash(cd *)",
+      "Bash(tail *)",
+      "WebSearch"
     ]
   }
 }
