@@ -12,7 +12,7 @@ The original 1972 Topliss tree encoded σ (electronic) and π (hydrophobic) Hans
 
 ---
 
-## 2. What's Done (as of 2026-03-17)
+## 2. What's Done (as of 2026-03-18)
 
 ### Environment
 - **OS:** Windows 11 Pro, RTX 4070
@@ -40,6 +40,21 @@ The original 1972 Topliss tree encoded σ (electronic) and π (hydrophobic) Hans
 - Correct scaffold-level splitting (GroupShuffleSplit on series_id) prevents leakage
 - SALI-like cliff score, standard contrastive loss, MCS-based pair visualization
 
+### M5c Results: ML Ceiling Analysis (2026-03-17)
+- **2D feature ceiling confirmed at NDCG@5 ~ 0.52** across all feature sets and models tested
+- HistGradientBoosting (8 feat, LOO-target): 0.5178 — barely beats L2 norm (0.5136)
+- Enriched v2 features (43 dim: FP XOR PCA, FG flags, transform freq, size): no improvement
+- FG net flags alone: 0.4935 (worse than property deltas alone)
+- Anti-gaming plan written: 8 risks identified, 3-phase mitigation, 6 success criteria
+
+### M6a Decision: 3D Context × Change-Type Architecture (2026-03-18)
+- **Reviewed all 3D featurization methods** — classical (pharmacophore, steric, electrostatic) through pretrained ML (Uni-Mol, SchNet, DimeNet, PaiNN, 3D-Infomax)
+- **Key insight:** Global 3D shape descriptors (PMI, USR, WHIM) don't help — the question is per-position, not whole-molecule. Local features (pharmacophore env at attachment, steric accessibility, electrostatic potential) are directly relevant.
+- **ML 3D models** (Uni-Mol, SchNet etc.) produce powerful per-atom embeddings but don't natively decompose into "what does this mean for halogen vs amine addition" — they capture WHERE but not WHERE × WHAT.
+- **Chose Hybrid Approach (Approach C):** `interpretable_score = classical_3D_context @ W @ change_type` + `learned_residual = MLP(atom_embedding, rgroup_embedding)` with tunable alpha. The classical part gives the Topliss-style "swap this with an EWG" recommendation; the learned part captures subtleties.
+- **This solves the within-group variance problem:** Previous env_hash was constant within a mol_from group. The context × change_type interaction varies because different R-groups interact differently with the same 3D context — the within-group signal comes from the cross-term.
+- **Webapp vision confirmed:** Input SMILES → 3D conformer → fragment at all single-cut positions → score all change types per position → heatmap of SAR sensitivity + ranked change-type recommendations per position
+
 ---
 
 ## 3. The Big Idea: Why MMPs, Not Cliff Pairs
@@ -58,144 +73,139 @@ The user (medicinal chemistry domain expert, not a coder) clarified the vision: 
 
 ---
 
-## 4. Architecture
+## 4. Architecture (revised 2026-03-18 — 3D Context × Change-Type Hybrid)
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│  DATA LAYER (M2-M3)                                         │
+│  DATA LAYER (M2-M3) ✅                                      │
 │  ChEMBL → curate → MMP extraction → transformation dataset │
-│  50-100 targets, 100K-2M (core, R_from, R_to, target, Δp)  │
+│  50 targets, 25M MMPs (core, R_from, R_to, target, Δp)     │
 ├─────────────────────────────────────────────────────────────┤
-│  FEATURE LAYER (M4)                                         │
-│  Per-transformation: Δ-descriptors, attachment env, SMARTS  │
-│  Per-context: scaffold rigidity, pharmacophore proximity    │
-│  Per-molecule: FPs, descriptors, embeddings, bio-profiles   │
-│  Pre-cached as numpy arrays for fast evaluation             │
+│  FEATURE LAYER (M4 + M6a-NEW)                               │
+│  2D features (done): Δ-descriptors, FG flags, env hash     │
+│  3D context features (new): pharmacophore env at attachment, │
+│    steric accessibility, electrostatic potential at cut atom │
+│  Change-type categories (new): EWG, EDG, lipophilic, polar, │
+│    H-bond donor/acceptor, size↑/↓, ring gain/loss (~8-10)   │
+│  Interaction features: 3D_context × change_type cross-terms │
 ├─────────────────────────────────────────────────────────────┤
-│  DISCOVERY LAYER (M5-M6)                                    │
-│  ShinkaEvolve evolves transformation scoring functions      │
+│  SCORING LAYER (Hybrid Approach C)                          │
+│  interpretable = classical_3D_context @ W @ change_type     │
+│  learned_residual = MLP(atom_embedding, rgroup_embedding)   │
+│  final_score = interpretable + α * learned_residual         │
 │  Fitness: leave-one-target-out NDCG@k                       │
-│  Output: interpretable Python scoring functions             │
 ├─────────────────────────────────────────────────────────────┤
-│  APPLICATION LAYER (M7)                                     │
-│  Input: starting molecule + target                          │
-│  → enumerate modifications → score → rank                   │
-│  Output: "Try these changes first"                          │
+│  APPLICATION LAYER (M7 — Webapp)                            │
+│  Input: SMILES of compound or series                        │
+│  → 3D conformer → fragment at all single-cut positions      │
+│  → per-position: score all change types                     │
+│  Output: molecule viewer with SAR sensitivity heatmap       │
+│    + ranked change-type recommendations per position        │
+│    "Position 4: Try EWG (0.72) > lipophilic (0.65)"         │
 └─────────────────────────────────────────────────────────────┘
 ```
+
+### Why the Hybrid Solves the Within-Group Problem
+
+Previous attempts failed because env_hash was constant within a mol_from group — NDCG ranks within a group, so features that don't vary within the group contribute zero signal. The **context × change_type interaction** fixes this: even when all transforms share the same attachment point (same 3D context), the interaction term varies because different R-groups interact differently with the same context. "Hydrophobic pocket × halogen" scores differently from "hydrophobic pocket × amine." The within-group variance comes from the **cross-term**, not from either factor alone.
+
+### 3D Feature Tiers (reviewed 2026-03-18)
+
+| Method | Local/Global | R-group relevance |
+|---|---|---|
+| **Pharmacophore env at attachment** (donor/acceptor/hydrophobic/aromatic) | Local | Direct — "hydrophobic region in R-group direction" |
+| **Steric accessibility** (SASA around cut atom) | Local | Direct — crowded positions penalize bulky R-groups |
+| **Electrostatic potential** (Gasteiger charges at cut atom) | Local | Maps to EWG/EDG sensitivity |
+| PMI / Asphericity / USR | Global | Weak — doesn't distinguish positions |
+| 3D autocorrelation / WHIM / GETAWAY | Global | Weak — whole-molecule QSAR |
+| **Uni-Mol / SchNet / PaiNN** (per-atom embeddings) | Local | Powerful but black-box — use for learned residual |
+| **3D-Infomax** (contrastive 2D/3D) | Local | Bonus: can use 2D input at inference |
 
 ---
 
 ## 5. Milestone Plan
 
-### M2 — MMP Extraction Module (NEXT — use Sonnet)
+### M2–M5 — COMPLETED (see Progress Log for details)
 
-**What to build:**
-- `src/activity_cliffs/data/mmp.py` — core extraction logic using `rdMMPA.FragmentMol(mol, maxCuts=1, resultsAsMols=False)`
-- `scripts/extract_mmps.py` — CLI wrapper with typer
+- M2: MMP extraction (1.1M MMPs from EGFR; rdMMPA single-cut)
+- M2b: Transformation enrichment analysis (halogens at hinge binders → top cliff drivers)
+- M3: Scaled to 50 targets (25M total MMPs)
+- M4: Feature engineering (25M rows × 11 columns, 298 MB parquet)
+- M5: ShinkaEvolve integration + manual evolution (16 candidates, best NDCG@5 = 0.5178)
+- M5c: ML ceiling confirmed at ~0.52 with 2D features
 
-**Algorithm:**
-1. For each molecule in curated data, fragment at all single-cut acyclic bond positions
-2. Each fragmentation yields (core_smiles, rgroup_smiles) with `[*:1]` attachment points
-3. Group all fragments by canonical core_smiles
-4. Within each group, every pair of molecules sharing a core is an MMP
-5. Record: core, rgroup_from, rgroup_to, transform_smarts (rgroup_from>>rgroup_to), ΔpActivity
-6. Cap group size at 200 to prevent O(n²) explosion
+### M6a — 3D Context Features (NEXT)
 
-**Output columns:** target_chembl_id, mol_from, mol_to, smiles_from, smiles_to, core_smiles, rgroup_from, rgroup_to, transform_smarts, pActivity_from, pActivity_to, delta_pActivity, abs_delta_pActivity
+**Goal:** Compute local 3D pharmacophore context features at each attachment point for the ~104K unique cores in the dataset.
 
-**Validate:** Run on EGFR (CHEMBL203). Expect >2K MMP rows.
+**What to compute per attachment atom:**
+1. **3D conformer generation** — RDKit ETKDG (`AllChem.EmbedMolecule` + `AllChem.MMFFOptimizeMolecule`)
+2. **Pharmacophore environment** — count donor/acceptor/hydrophobic/aromatic/positive/negative pharmacophore features within 4Å of the attachment atom (RDKit `Chem.Pharm2D` or manual check of atom types)
+3. **Steric accessibility** — solvent-accessible surface area contribution at the cut atom (`rdFreeSASA.CalcSASA` or `Descriptors.LabuteASA`)
+4. **Electrostatic character** — Gasteiger partial charge at the cut atom
+5. **Local rigidity** — number of rotatable bonds within 2 bonds of the attachment
 
-**Exact prompt for Sonnet:**
-```
-Write the MMP extraction module at src/activity_cliffs/data/mmp.py using rdMMPA.FragmentMol for single-cut fragmentation, plus the CLI script at scripts/extract_mmps.py. Follow the design from the progress log: fragment every molecule, group by canonical core, pair within groups, output parquet with columns for core, rgroups, transform_smarts, and delta_pActivity. Cap group size at 200 to control pair explosion. Then run it on EGFR (CHEMBL203) using the ChEMBL database at "D:\Mike project data\Activity cliffs\chembl_36\chembl_36_sqlite\chembl_36.db" to validate.
-```
+**Output:** ~5-10 interpretable features per attachment point, cached as a lookup table indexed by (core_smiles, cut_atom_idx).
 
-### M2b — Transformation Enrichment Analysis (Opus)
+### M6b — Change-Type Classification
 
-Before scaling, analyze EGFR MMPs: which transformations most frequently cause large |ΔpActivity|? This is the data-driven Topliss analog — potentially publishable even without ML.
+**Goal:** Classify each R-group transformation into medchem-meaningful categories.
 
-**Prompt for Opus:**
-```
-The EGFR MMP extraction is done. Analyze the transformation enrichment: for each unique transform_smarts, compute the mean and median abs_delta_pActivity, count, and fraction of "cliff-inducing" transforms (abs_delta >= 1.5). Show me the top 20 most informative transformations and interpret what physicochemical/pharmacological patterns they reveal. Compare to Topliss's original σ/π axes.
-```
+**Categories (~8-10):**
+- EWG addition/removal (F, Cl, CF3, NO2, CN, SO2, COOH)
+- EDG addition/removal (NH2, OH, OMe, NMe2, alkyl)
+- Lipophilic change (alkyl chain extension, aromatic ring addition)
+- Polar change (add/remove H-bond donor or acceptor)
+- Size increase / Size decrease
+- Ring gain / Ring loss
+- Aromaticity change
 
-### M3 — Scale to 50 Targets (Sonnet)
+**Method:** SMARTS-based classification of R-group fragments. Each transform gets a one-hot (or multi-hot) change-type vector.
 
-Extract MMPs from the top 50 ChEMBL targets (those with >500 IC50 compounds). Combine into `outputs/mmps/all_mmps.parquet`. This is the ShinkaEvolve training corpus.
+### M6c — Interaction Feature Test
 
-**Target selection:** Already have the top 30 from `list_targets --top 30`. Extend to 50. Filter to Homo sapiens only. Key targets include:
-- EGFR (CHEMBL203) — already done
-- BTK (CHEMBL5251), JAK2 (CHEMBL2971), VEGFR2 (CHEMBL279) — kinases
-- BACE1 (CHEMBL4822) — protease (non-kinase validation)
-- BRD4 (CHEMBL1163125) — bromodomain
-- HDAC1 (CHEMBL325) — zinc enzyme
+**Goal:** Test whether 3D_context × change_type cross-products break the 0.52 ceiling.
 
-### M4 — Feature Engineering (Sonnet + Opus for design)
+**Method:**
+1. Build interaction features: outer product of context vector (5-10 dim) × change_type vector (8-10 dim) → 40-100 features
+2. Train HGB on interaction features + original deltas
+3. Evaluate with same LOO-target NDCG@5 protocol
+4. If ceiling breaks → proceed to hybrid model (Approach C)
 
-Pre-compute and cache features for every molecule and transformation in the corpus:
+### M7 — Webapp: SAR Sensitivity Explorer
 
-**Transformation features:**
-- Δ in Hansch-like parameters (ΔLogP, ΔTPSA, ΔMW, ΔHBDonors, ΔHBAcceptors)
-- Size change (Δ heavy atom count)
-- R-group fingerprints (Morgan FP of each R-group fragment)
+**Input:** SMILES of compound (or series)
+**Pipeline:**
+1. Generate 3D conformer (ETKDG)
+2. Fragment at all single-cut positions (rdMMPA)
+3. For each attachment point:
+   a. Compute 3D pharmacophore context
+   b. Score all change types via the trained model
+   c. Rank change types by predicted cliff probability
+**Output:** 2D/3D molecule viewer (Streamlit or Gradio) with:
+- Positions colored by SAR sensitivity (red = high cliff probability for any change)
+- Click a position → ranked list of change types
+- "Position 4: Try EWG (0.72) > lipophilic (0.65) > size increase (0.58)"
 
-**Context features:**
-- Attachment point atom environment (Morgan substructure hash at cut bond)
-- Local scaffold rigidity (rotatable bonds near attachment)
-- Pharmacophore features near attachment point
-
-**Global molecule features:**
-- ECFP4, MACCS keys, physicochemical descriptors
-- (Optional) Mol2Vec embeddings, predicted bioactivity profiles
-
-Store as numpy arrays indexed by (target, molregno) for fast ShinkaEvolve evaluation.
-
-### M5 — ShinkaEvolve Integration (Opus for design, Sonnet for implementation)
-
-**Install:** `pip install shinkaevolve` (Apache 2.0, ICLR 2026)
-
-**Template function to evolve:**
-```python
-def score_transformation(
-    context_smiles: str,      # shared scaffold with [*:1]
-    frag_from: str,           # R-group being removed
-    frag_to: str,             # R-group being added
-    attachment_env: dict,     # pre-computed atom environment features
-    mol_descriptors: dict,    # pre-computed molecular descriptors
-) -> float:
-    """Score how likely this transformation is to cause a large
-    activity change. Higher = more informative modification.
-    Available: rdkit, numpy, scipy, sklearn."""
-```
-
-**Fitness evaluator:**
-- For each held-out target (leave-one-target-out):
-  - For each starting molecule with ≥3 known transformations:
-    - Score all transformations with the evolved function
-    - Measure NDCG@5 (did the top-ranked ones actually cause the biggest |ΔpActivity|?)
-- Return mean NDCG@5 across all held-out targets
-
-**Key ShinkaEvolve config:**
-- Pre-cache all features so evaluation is microseconds per transformation
-- Use ~200-300 generations (ShinkaEvolve is sample-efficient)
-- Run on CPU (no GPU needed for evaluation)
-
-### M6 — Analysis & Iteration (Opus)
-
-Read the top-scoring evolved programs. Interpret what features they use. Compare to Topliss. Incorporate domain insight (user is a medchem expert). Re-evolve with refined constraints.
-
-### M7 — Recommendation Interface (Sonnet)
-
-Notebook or simple script:
-1. User provides SMILES + target
-2. System enumerates feasible modifications (BRICS cuts, functional group swaps)
-3. Scores each with the best evolved function
-4. Returns ranked list of recommended modifications
+**Note:** The model predicts SAR sensitivity (likelihood of a cliff), not direction (increased vs decreased activity). It helps the chemist narrow the scope for the first round of modifications.
 
 ---
 
-## 6. Model Decision Guide
+## 6. Revised Milestone Map (2026-03-18)
+
+| # | Milestone | Status | Model |
+|---|---|---|---|
+| M1 | Env setup + ChEMBL + EGFR end-to-end | ✅ Done | — |
+| M2 | MMP extraction + transformation enrichment | ✅ Done | — |
+| M3 | Scale to 50 targets | ✅ Done | — |
+| M4 | Feature engineering (2D) | ✅ Done | — |
+| M5 | ShinkaEvolve + manual evolution + ceiling analysis | ✅ Done | — |
+| M6a | **3D context features at attachment points** | 🔲 NEXT | Sonnet |
+| M6b | **Change-type classification of R-groups** | 🔲 | Sonnet |
+| M6c | **Interaction feature test (break the 0.52 ceiling?)** | 🔲 | Sonnet (impl) + Opus (interpret) |
+| M7 | **Webapp: SAR Sensitivity Explorer** | 🔲 | Sonnet |
+
+## 7. Model Decision Guide
 
 | Task | Model | Rationale |
 |---|---|---|
@@ -217,7 +227,8 @@ Notebook or simple script:
 | `src/activity_cliffs/` | Package source |
 | `src/activity_cliffs/data/chembl.py` | ChEMBL data loader (fixed for v36 schema) |
 | `src/activity_cliffs/data/curation.py` | Activity curation (nM → pActivity) |
-| `src/activity_cliffs/data/mmp.py` | **TO BUILD** — MMP extraction |
+| `src/activity_cliffs/data/mmp.py` | MMP extraction (M2) |
+| `src/activity_cliffs/features/mmp_features.py` | MMP feature engineering (M4) |
 | `src/activity_cliffs/cliffs/miner.py` | Cliff pair miner |
 | `src/activity_cliffs/features/featurizer.py` | ECFP4 + descriptors |
 | `src/activity_cliffs/models/baselines.py` | LogReg + Ridge baselines |
@@ -226,8 +237,22 @@ Notebook or simple script:
 | `src/activity_cliffs/analysis/visualization.py` | Cliff network + SAR plots |
 | `scripts/run_demo.py` | End-to-end demo pipeline |
 | `scripts/list_targets.py` | Browse ChEMBL targets by data richness |
-| `scripts/extract_mmps.py` | **TO BUILD** — MMP extraction CLI |
+| `scripts/extract_mmps.py` | MMP extraction CLI |
+| `scripts/prepare_evolve_data.py` | Prepare eval data for ShinkaEvolve (M5) |
+| `evolve/initial.py` | Template scoring function (EVOLVE-BLOCK) |
+| `evolve/evaluate.py` | Fitness evaluator (NDCG@5, 50 targets) |
+| `evolve/run_evo.py` | ShinkaEvolve launcher script |
+| `evolve/eval_data/eval_data.npz` | Pre-computed eval data v1 (1.19M rows, 12 feat) |
+| `evolve/eval_data/eval_data_v2.npz` | Enriched eval data v2 (1.19M rows, 43 feat + 256 XOR bits) |
+| `evolve/ml_ceiling.py` | ML ceiling script v1 (original features) |
+| `evolve/ml_ceiling_v2.py` | ML ceiling script v2 (enriched features) |
+| `evolve/ANTI_GAMING_PLAN.md` | Overfitting/gaming risk analysis + mitigations |
+| `evolve/candidates/` | 17 tested candidate scoring functions (gen1, gen2) |
+| `scripts/prepare_evolve_data_v2.py` | Prepare enriched eval data (FP XOR, FG flags, freq) |
 | `outputs/demo/CHEMBL203/` | M1 EGFR results |
+| `outputs/mmps/all_mmps.parquet` | M3 full MMP corpus (25M rows) |
+| `outputs/features/mmp_features.parquet` | M4 feature matrix (25M rows) |
+| `outputs/evolve/results/` | ShinkaEvolve output (M5, when run) |
 | `PROGRESS_LOG.md` | Step-by-step activity log |
 
 ---
