@@ -28,6 +28,7 @@ from webapp.predict import (
     predict_positions,
     sensitivity_to_label,
     PositionResult,
+    EvidenceExample,
     FEATURE_NAMES,
 )
 
@@ -178,6 +179,70 @@ def draw_molecule_with_sensitivity(
     return drawer.GetDrawingText()
 
 
+# ── Evidence rendering ────────────────────────────────────────────────────────
+
+def _format_rgroup(smi: str) -> str:
+    """Format R-group SMILES for display, replacing [*:1] with R."""
+    return smi.replace("[*:1]", "R-")
+
+
+def _delta_color(delta: float) -> str:
+    """CSS color for a ΔpActivity value."""
+    if abs(delta) >= 1.5:
+        return "#e63333" if delta > 0 else "#334de6"  # red / blue
+    elif abs(delta) >= 1.0:
+        return "#d97706" if delta > 0 else "#2563eb"  # amber / blue
+    else:
+        return "#6b7280"  # gray
+
+
+def _render_evidence(evidence: list[EvidenceExample]) -> None:
+    """Render evidence examples as a styled list."""
+    exact = [e for e in evidence if e.source == "exact"]
+    similar = [e for e in evidence if e.source == "similar"]
+
+    if exact:
+        st.caption("Exact core match — same scaffold exists in ChEMBL:")
+        for e in exact:
+            delta_sign = "+" if e.delta_pActivity > 0 else ""
+            color = _delta_color(e.delta_pActivity)
+            st.markdown(
+                f'<div style="margin-bottom:4px;padding:6px 10px;background:#f8f9fa;'
+                f'border-left:3px solid {color};border-radius:4px;font-size:0.9em;">'
+                f'<strong>{e.target_name}</strong> ({e.target_id}): '
+                f'<code>{_format_rgroup(e.rgroup_from)}</code> → '
+                f'<code>{_format_rgroup(e.rgroup_to)}</code> &nbsp; '
+                f'<span style="color:{color};font-weight:bold;">'
+                f'ΔpActivity = {delta_sign}{e.delta_pActivity:.2f}</span>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+
+    if similar:
+        label = "Similar pharmacophore context:" if not exact else "Similar positions on other scaffolds:"
+        st.caption(label)
+        for e in similar:
+            delta_sign = "+" if e.delta_pActivity > 0 else ""
+            color = _delta_color(e.delta_pActivity)
+            sim_pct = e.similarity * 100
+            st.markdown(
+                f'<div style="margin-bottom:4px;padding:6px 10px;background:#f8f9fa;'
+                f'border-left:3px solid {color};border-radius:4px;font-size:0.9em;">'
+                f'<strong>{e.target_name}</strong> ({e.target_id}): '
+                f'<code>{_format_rgroup(e.rgroup_from)}</code> → '
+                f'<code>{_format_rgroup(e.rgroup_to)}</code> &nbsp; '
+                f'<span style="color:{color};font-weight:bold;">'
+                f'ΔpActivity = {delta_sign}{e.delta_pActivity:.2f}</span>'
+                f' &nbsp;<span style="color:#9ca3af;font-size:0.85em;">'
+                f'({sim_pct:.0f}% similar)</span>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+
+    if not exact and not similar:
+        st.caption("No evidence examples found for this position.")
+
+
 # ── Main app ─────────────────────────────────────────────────────────────────
 
 def main():
@@ -311,21 +376,26 @@ rules apply across kinases, GPCRs, proteases, etc.
                     st.markdown(f"**Core size:** {r.features.get('core_n_heavy', 0):.0f} heavy atoms")
                     st.markdown(f"**Core rings:** {r.features.get('core_n_rings', 0):.0f}")
 
-                # Feature breakdown
-                st.markdown("**Feature breakdown:**")
-                feat_rows = []
-                for fname in FEATURE_NAMES:
-                    val = r.features.get(fname, 0.0)
-                    short, desc = FEATURE_DESCRIPTIONS.get(fname, (fname, ""))
-                    feat_rows.append({"Feature": short, "Value": f"{val:.3f}", "Description": desc})
+                # ── Real-world evidence ──────────────────────────────
+                if r.evidence:
+                    st.markdown("---")
+                    st.markdown("**Real-world evidence from ChEMBL:**")
+                    _render_evidence(r.evidence)
 
-                # Show as a compact table
-                import pandas as pd
-                st.dataframe(
-                    pd.DataFrame(feat_rows),
-                    hide_index=True,
-                    use_container_width=True,
-                )
+                # Feature breakdown (collapsed by default)
+                with st.popover("Show feature breakdown"):
+                    feat_rows = []
+                    for fname in FEATURE_NAMES:
+                        val = r.features.get(fname, 0.0)
+                        short, desc = FEATURE_DESCRIPTIONS.get(fname, (fname, ""))
+                        feat_rows.append({"Feature": short, "Value": f"{val:.3f}", "Description": desc})
+
+                    import pandas as pd
+                    st.dataframe(
+                        pd.DataFrame(feat_rows),
+                        hide_index=True,
+                        use_container_width=True,
+                    )
 
     # ── Interpretation panel ──────────────────────────────────────────────
     st.divider()
@@ -357,6 +427,9 @@ rules apply across kinases, GPCRs, proteases, etc.
 
 **What makes a position sensitive?**
 The strongest predictors are scaffold simplicity (smaller cores with fewer rings) and solvent exposure (higher SASA, less steric crowding). Intuitively: when the R-group represents a larger fraction of the molecule's binding interaction, changes there have bigger effects on potency.
+
+**About the evidence examples:**
+Each position shows real matched molecular pairs from ChEMBL where modifications were made at pharmacophore-equivalent positions. **Exact matches** mean the same scaffold core exists in the database. **Similar matches** come from different scaffolds whose attachment point has the same local environment (H-bond donors/acceptors, steric crowding, charge, aromaticity). The ΔpActivity values are measured, not predicted — these are real potency changes from real assays.
     """)
 
 

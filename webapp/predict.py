@@ -4,6 +4,9 @@ Prediction pipeline: SMILES → fragment → 3D features → position sensitivit
 Takes any input molecule, finds all single-cut fragmentable bonds,
 computes 3D pharmacophore context at each attachment point, and predicts
 SAR sensitivity per position using the trained HGB model.
+
+Also provides evidence lookup: for each predicted position, find real
+ChEMBL examples with similar pharmacophore context to explain the prediction.
 """
 from __future__ import annotations
 
@@ -22,11 +25,25 @@ from activity_cliffs.features.context_3d import compute_3d_context, CONTEXT_3D_F
 
 
 MODEL_PATH = Path(__file__).parent / "model" / "position_hgb.pkl"
+EVIDENCE_INDEX_PATH = Path(__file__).parent / "model" / "evidence_index.pkl"
 
 # Feature order must match training data
 FEATURE_NAMES = [
     f"ctx_{c}" for c in CONTEXT_3D_FEATURES
 ] + ["core_n_heavy", "core_n_rings"]
+
+
+@dataclass
+class EvidenceExample:
+    """A real MMP from ChEMBL that supports a prediction."""
+    target_id: str           # e.g. "CHEMBL203"
+    target_name: str         # e.g. "EGFR"
+    rgroup_from: str         # R-group SMILES before change
+    rgroup_to: str           # R-group SMILES after change
+    delta_pActivity: float   # signed potency change
+    abs_delta: float         # |ΔpActivity|
+    similarity: float        # cosine similarity to query position (0-1)
+    source: str              # "exact" if same core, "similar" if neighbor
 
 
 @dataclass
@@ -40,6 +57,7 @@ class PositionResult:
     sensitivity: float       # predicted mean |ΔpActivity| if this position is modified
     percentile: float        # percentile vs training data (0-100)
     features: dict[str, float] = field(default_factory=dict)
+    evidence: list[EvidenceExample] = field(default_factory=list)
 
 
 def _load_model():
@@ -244,6 +262,11 @@ def predict_positions(smiles: str) -> list[PositionResult]:
     # Sort by sensitivity (highest first)
     results.sort(key=lambda r: r.sensitivity, reverse=True)
 
+    # Attach evidence examples from real ChEMBL MMPs
+    for r in results:
+        x = np.array([r.features[fn] for fn in FEATURE_NAMES], dtype=np.float32)
+        r.evidence = find_evidence(x, r.core_smiles)
+
     return results
 
 
@@ -259,3 +282,108 @@ def sensitivity_to_label(sensitivity: float) -> str:
         return "Low"
     else:
         return "Very Low"
+
+
+# ── Evidence index ───────────────────────────────────────────────────────
+
+_EVIDENCE_INDEX = None
+
+
+def _load_evidence_index():
+    """Load the pre-built evidence index (BallTree + evidence lookup)."""
+    if not EVIDENCE_INDEX_PATH.exists():
+        return None
+    with open(EVIDENCE_INDEX_PATH, "rb") as f:
+        return pickle.load(f)
+
+
+def get_evidence_index():
+    global _EVIDENCE_INDEX
+    if _EVIDENCE_INDEX is None:
+        _EVIDENCE_INDEX = _load_evidence_index()
+    return _EVIDENCE_INDEX
+
+
+def find_evidence(
+    features: np.ndarray,
+    core_smiles: str,
+    k_neighbors: int = 10,
+    max_examples: int = 8,
+) -> list[EvidenceExample]:
+    """
+    Find real MMP evidence for a predicted position.
+
+    Strategy:
+    1. Check if the exact core_smiles exists in the evidence index (exact match)
+    2. Find k nearest cores by pharmacophore context features (similar match)
+    3. Combine and deduplicate, prioritizing exact matches and largest |delta|
+
+    Args:
+        features: 11-dim feature vector for this position (same order as training)
+        core_smiles: the core SMILES from fragmentation
+        k_neighbors: number of nearest cores to retrieve
+        max_examples: max evidence examples to return
+
+    Returns:
+        List of EvidenceExample sorted by |delta| descending
+    """
+    idx = get_evidence_index()
+    if idx is None:
+        return []
+
+    evidence_lookup = idx["evidence_lookup"]
+    scaler = idx["scaler"]
+    tree = idx["tree"]
+    examples: list[EvidenceExample] = []
+    seen: set[tuple[str, str, str]] = set()  # (target, rg_from, rg_to)
+
+    # 1. Exact match: same core exists in ChEMBL
+    if core_smiles in evidence_lookup:
+        for ex in evidence_lookup[core_smiles]:
+            key = (ex["target_id"], ex["rgroup_from"], ex["rgroup_to"])
+            if key not in seen:
+                seen.add(key)
+                examples.append(EvidenceExample(
+                    target_id=ex["target_id"],
+                    target_name=ex["target_name"],
+                    rgroup_from=ex["rgroup_from"],
+                    rgroup_to=ex["rgroup_to"],
+                    delta_pActivity=ex["delta_pActivity"],
+                    abs_delta=ex["abs_delta"],
+                    similarity=1.0,
+                    source="exact",
+                ))
+
+    # 2. Nearest-neighbor: find cores with similar pharmacophore context
+    x_scaled = scaler.transform(features.reshape(1, -1))
+    dists, idxs = tree.query(x_scaled, k=k_neighbors)
+
+    core_smiles_arr = idx["core_smiles"]
+    for dist, neighbor_idx in zip(dists[0], idxs[0]):
+        neighbor_core = str(core_smiles_arr[neighbor_idx])
+        if neighbor_core == core_smiles:
+            continue  # already handled as exact match
+
+        # Convert distance to similarity (0-1 scale, 1 = identical)
+        similarity = 1.0 / (1.0 + dist)
+
+        if neighbor_core in evidence_lookup:
+            for ex in evidence_lookup[neighbor_core]:
+                key = (ex["target_id"], ex["rgroup_from"], ex["rgroup_to"])
+                if key not in seen:
+                    seen.add(key)
+                    examples.append(EvidenceExample(
+                        target_id=ex["target_id"],
+                        target_name=ex["target_name"],
+                        rgroup_from=ex["rgroup_from"],
+                        rgroup_to=ex["rgroup_to"],
+                        delta_pActivity=ex["delta_pActivity"],
+                        abs_delta=ex["abs_delta"],
+                        similarity=similarity,
+                        source="similar",
+                    ))
+
+    # Sort: exact matches first, then by |delta| descending
+    examples.sort(key=lambda e: (0 if e.source == "exact" else 1, -e.abs_delta))
+
+    return examples[:max_examples]
