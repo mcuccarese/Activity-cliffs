@@ -34,10 +34,13 @@
 | **R-group property lookup** | `outputs/features/rgroup_props.parquet` | ✅ 376,299 R-groups × 11 features, 9.0 MB |
 | **Interaction feature test** | `evolve/ml_ceiling_v3.py` | ✅ M6c — done (ceiling holds) |
 | **Eval data v3** | `evolve/eval_data/eval_data_v3.npz` | ✅ 1.19M rows × 127 features, 85.6 MB |
+| **Position-level data** | `scripts/prepare_position_data.py` | ✅ M7a — done |
+| **Position eval data** | `evolve/eval_data/position_data.npz` | ✅ 598K rows × 11 features, 4.3 MB |
+| **Position ceiling test** | `evolve/position_ceiling.py` | ✅ M7a — NDCG@3=0.964, Hit@1=57% |
 
 ---
 
-## Milestone Map (revised 2026-03-18 — 3D context × change-type architecture)
+## Milestone Map (revised 2026-03-19 — position-level reframe)
 
 | # | Milestone | Status | Model |
 |---|---|---|---|
@@ -49,7 +52,9 @@
 | M6a | **3D context features at attachment points** | ✅ Done | Sonnet |
 | M6b | **Change-type classification of R-groups** | ✅ Done | Sonnet |
 | M6c | **Interaction feature test (break 0.52 ceiling?)** | ✅ Done (ceiling holds) | Sonnet + Opus |
-| M7 | **Webapp: SAR Sensitivity Explorer** | 🔲 | Sonnet |
+| M7a | **Position-level reframe + ceiling test** | ✅ Done (NDCG@3=0.964, Hit@1=57%) | Opus |
+| M7b | **Pharmacophore homology grouping** | 🔲 | Opus |
+| M7c | **Webapp: SAR Sensitivity Explorer** | 🔲 | Sonnet |
 
 ---
 
@@ -79,40 +84,35 @@
 | 2026-03-18 | M6a: Architecture decision — 3D context × change-type hybrid | Reviewed all 3D featurization methods (classical through Uni-Mol/SchNet). Chose Hybrid Approach C: `interpretable = 3D_context @ W @ change_type` + `learned_residual = MLP(atom_embed, rgroup_embed)`. Key insight: context × change_type interaction provides within-group variance (the missing piece). Webapp vision: input SMILES → positions colored by SAR sensitivity → ranked change-type recommendations. Session died to 529 errors before updating files — recovered in next session. |
 | 2026-03-18 | M6a: 3D pharmacophore context features computed | Built `context_3d.py` module + `compute_3d_context.py` CLI. For each of 104,346 unique cores: replaced [*:1] with H, ETKDG conformer + MMFF, computed 9 features at attachment atom (donor/acceptor/hydrophobic/aromatic counts within 4Å, SASA, Gasteiger charge, rotatable bonds within 2 bonds, aromatic flag, heavy atom density). **0 parse failures, 99.99% got 3D features** (13 topological-only fallback). 53 min on single CPU (32.8 cores/s). Key stats: 42% aromatic attachment, mean charge -0.077, mean 6.4 heavy atoms within 4Å. Bugs fixed during dev: Gasteiger NaN from dummy atoms (compute on capped mol), GetShortestPath self-loop crash, GetTotalNumHs=0 after AddHs (count bonded H neighbors). |
 | 2026-03-18 | M6b: R-group change-type classification | Built `change_type.py` module + `compute_change_types.py` CLI. 11-dim property vector per R-group: EWG/EDG detection (SMARTS), HBD/HBA counts, LogP, heavy atoms, rings, aromatic rings, fsp3. **376,299 unique R-groups classified in 3.7 min** (1,679 rg/s), 0 failures → `outputs/features/rgroup_props.parquet` (9.0 MB). Validated on medchem examples: F→OMe correctly shows EWG→EDG swap; Me→Ph captures ring/aromaticity gain; Ph→cHex shows aromaticity loss + sp3 gain. Cliff vs non-cliff deltas: cliffs have larger delta_heavy_atoms (+0.60), delta_ewg_count (+0.10), delta_lipophilicity (+0.08), delta_n_rings (+0.10) — consistent with M2b finding that bigger structural changes drive cliffs. |
-| 2026-03-18 | M6c: Interaction feature test — **ceiling NOT broken** | Built `prepare_evolve_data_v3.py` (joins 2D deltas + 3D context + change-type + interactions → 127 features, 1.19M rows, 85.6 MB) and `ml_ceiling_v3.py` (14 experiments). **All combinations ≤ 0.5170, matching the original 8-feature baseline.** 3D context alone = 0.4124 (worse than random — no within-group variance as predicted). Change-type deltas alone = 0.5108 (competitive but redundant with property deltas). Context × change_type interactions = 0.5032 (HGB already learns interactions natively). Adding features to baseline slightly hurts (0.5126–0.5155). Deeper HGB (500 iter, depth 8) = 0.5142. **Conclusion: the ~0.52 ceiling is a fundamental limit of target-agnostic ligand descriptors.** What makes a specific R-group swap cause a cliff depends on the protein binding pocket geometry, which no ligand-only feature captures. The path forward requires either target-specific models or protein-side features. |
+| 2026-03-18 | M6c: Interaction feature test — **ceiling NOT broken** | Built `prepare_evolve_data_v3.py` (joins 2D deltas + 3D context + change-type + interactions -> 127 features, 1.19M rows, 85.6 MB) and `ml_ceiling_v3.py` (14 experiments). **All combinations <= 0.5170, matching the original 8-feature baseline.** 3D context alone = 0.4124 (worse than random -- no within-group variance as predicted). Change-type deltas alone = 0.5108 (competitive but redundant with property deltas). Context x change_type interactions = 0.5032 (HGB already learns interactions natively). Adding features to baseline slightly hurts (0.5126-0.5155). Deeper HGB (500 iter, depth 8) = 0.5142. **Conclusion: the ~0.52 ceiling is a fundamental limit of target-agnostic ligand descriptors.** What makes a specific R-group swap cause a cliff depends on the protein binding pocket geometry, which no ligand-only feature captures. The path forward requires either target-specific models or protein-side features. |
+| 2026-03-19 | M7a: Position-level reframe — **breakthrough result** | Reframed question from "which R-group swap causes the biggest cliff?" (transformation-level) to "which position on a molecule is most SAR-sensitive?" (position-level). Aggregated 25M MMPs to 598K (mol_from, position, target) rows across 50 targets, 46K unique cores, 111K molecules. Features: 9 3D context + 2 core topology = 11 features. **Key finding: 3D context features that scored 0.41 (below random) at transformation level now score 0.946 NDCG@3 at position level.** Best model (HGB, 11 features): NDCG@3=0.964, Hit@1=57% (2.3x random 25%), Spearman=0.607. Position sensitivity generalizes across targets (leave-one-target-out). Within-molecule position range = 0.50 pActivity units (meaningful variance). Strongest signals: core_n_heavy (r=-0.51), core_n_rings (r=-0.45), n_heavy_4A (r=-0.38), n_aromatic_4A (r=-0.27). Interpretation: simpler, less crowded, less constrained positions are more SAR-sensitive -- the R-group represents a larger fraction of the binding interaction. |
 
 ---
 
 ## Current Status
 
-**2026-03-18** — **M6c complete (negative result).** The 3D context × change-type interaction features did NOT break the 0.52 NDCG@5 ceiling. Tested 14 feature combinations (up to 127 features) with HGB and deeper HGB — all ≤ 0.5170, matching the original 8-feature baseline. The ceiling is a fundamental limit of target-agnostic ligand descriptors.
+**2026-03-19** — **M7a complete (positive result!).** The position-level reframe works. By asking "which position to modify first" instead of "which R-group swap causes the biggest cliff," we turned 3D context features from dead weight into powerful predictors. Hit@1=57% means the model correctly identifies the most SAR-sensitive position on a molecule more than half the time, generalizing across all 50 targets.
 
-**Next:** Architectural pivot needed. The project needs to decide between:
-1. **Target-specific models** — train per-target rankers (abandons cross-target generalization but may achieve higher NDCG within each target)
-2. **Protein-side features** — add binding site descriptors (pocket polarity, shape, key residues) so the model knows WHY a position is sensitive at a given target
-3. **Reframe the webapp** — accept the 0.52 ceiling as the cross-target baseline and build the SAR Sensitivity Explorer using the simple L2-norm scoring function, which is already interpretable and nearly optimal
-4. **Target-class conditioning** — group targets by family (kinase, GPCR, protease) and learn family-specific interaction rules
+**Next steps:**
+1. **M7b: Pharmacophore homology grouping** — compute target-target SAR profile similarity from the MMP data, cluster into pharmacophore-homologous groups, test whether group-conditioned models improve predictions further
+2. **M7c: Webapp** — build SAR Sensitivity Explorer using the position-level model (input SMILES -> heatmap of position sensitivity -> change-type recommendations per position)
 
 ---
 
 ## Next Steps
 
-### Step: M6a — ✅ DONE (2026-03-18)
-3D pharmacophore context features computed for all 104,346 unique cores. See completed steps above.
+### Step: M7a — ✅ DONE (2026-03-19)
+Position-level reframe validated. NDCG@3=0.964, Hit@1=57%, Spearman=0.607. See completed steps above.
 
-### Step: M6b — ✅ DONE (2026-03-18)
-R-group change-type classification completed. 376,299 R-groups × 11 properties. See completed steps above.
+### Step: M7b — Pharmacophore Homology Grouping (NEXT)
+**Model:** Opus (scientific architecture)
+**Goal:** Compute target-target SAR profile similarity from MMP data. Cluster targets by pharmacophore homology (data-driven, no protein structures needed). Test whether group-conditioned models improve position sensitivity predictions.
+**Prompt:** "Compute SAR profile vectors for each target (change_type category -> mean cliff rate). Correlate across targets, cluster into pharmacophore-homologous groups, train group-conditioned HGB models, evaluate improvement over target-agnostic model."
 
-### Step: M6c — ✅ DONE (2026-03-18)
-Interaction features tested. Ceiling NOT broken. See completed steps above.
-
-### Step: Decision Point — What's next? (NEEDS DISCUSSION)
-**Model:** Opus (architectural decision)
-**Options:**
-1. **Proceed to webapp (M7) with current scoring** — the L2-norm scoring function (NDCG@5=0.5136) is interpretable, fast, and within 0.003 of the ML ceiling. Build the SAR Sensitivity Explorer using it. Accept that cross-target cliff prediction has a ~0.52 ceiling.
-2. **Target-specific models** — train separate HGB models per target (or target family). This could yield much higher NDCG per target but requires enough data per target and loses the "generalized Topliss tree" vision.
-3. **Add protein-side features** — incorporate binding site descriptors (e.g., from PDB structures or AlphaFold). This is the most scientifically ambitious path but requires significant new infrastructure.
-4. **Target-family conditioning** — a middle ground: learn kinase-specific vs GPCR-specific rules. Preserves some generalization while allowing target-class-specific patterns.
+### Step: M7c — Webapp: SAR Sensitivity Explorer
+**Model:** Sonnet (implementation)
+**Goal:** Build Streamlit/Gradio app. Input: SMILES. Output: molecule with positions colored by predicted SAR sensitivity. Click position for change-type recommendations.
+**Depends on:** M7a model (position sensitivity prediction) + optionally M7b (pharmacophore conditioning).
 
 ---
 
