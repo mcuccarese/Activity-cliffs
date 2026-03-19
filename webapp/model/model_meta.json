@@ -1,0 +1,47 @@
+{
+  "feature_names": [
+    "ctx_n_donor_4A",
+    "ctx_n_acceptor_4A",
+    "ctx_n_hydrophobic_4A",
+    "ctx_n_aromatic_4A",
+    "ctx_sasa_attach",
+    "ctx_gasteiger_charge",
+    "ctx_n_rotbonds_2",
+    "ctx_is_aromatic_attach",
+    "ctx_n_heavy_4A",
+    "core_n_heavy",
+    "core_n_rings"
+  ],
+  "n_training_rows": 598173,
+  "n_features": 11,
+  "n_targets_trained_on": 50,
+  "y_mean": 0.8339884281158447,
+  "y_std": 0.4150940179824829,
+  "y_p25": 0.5218979120254517,
+  "y_p75": 1.1202865839004517,
+  "y_p90": 1.3750978708267212,
+  "hyperparameters": {
+    "max_iter": 300,
+    "max_depth": 6,
+    "learning_rate": 0.1,
+    "min_samples_leaf": 50
+  },
+  "validation_metrics": {
+    "ndcg_at_3": 0.964,
+    "hit_at_1": 0.57,
+    "spearman": 0.607
+  },
+  "feature_importances": {
+    "core_n_heavy": 0.4542,
+    "ctx_gasteiger_charge": 0.1411,
+    "ctx_sasa_attach": 0.1065,
+    "core_n_rings": 0.0849,
+    "ctx_n_aromatic_4A": 0.0456,
+    "ctx_n_heavy_4A": 0.0455,
+    "ctx_n_hydrophobic_4A": 0.034,
+    "ctx_n_rotbonds_2": 0.0279,
+    "ctx_n_acceptor_4A": 0.0131,
+    "ctx_n_donor_4A": 0.0125,
+    "ctx_is_aromatic_attach": 0.0054
+  }
+}

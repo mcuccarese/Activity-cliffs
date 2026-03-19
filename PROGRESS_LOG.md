@@ -37,6 +37,11 @@
 | **Position-level data** | `scripts/prepare_position_data.py` | ✅ M7a — done |
 | **Position eval data** | `evolve/eval_data/position_data.npz` | ✅ 598K rows × 11 features, 4.3 MB |
 | **Position ceiling test** | `evolve/position_ceiling.py` | ✅ M7a — NDCG@3=0.964, Hit@1=57% |
+| **Pharmacophore homology** | `scripts/pharmacophore_homology.py` | ✅ M7b — no improvement (targets too similar, r>0.91) |
+| **SAR profiles + clusters** | `outputs/pharmacophore_homology/` | ✅ Heatmap, dendrogram, cluster assignments, results JSON |
+| **Final position model** | `webapp/model/position_hgb.pkl` | ✅ M7c — HGB trained on all 598K rows |
+| **SAR Sensitivity Explorer** | `webapp/app.py` | ✅ M7c — Streamlit webapp with molecule coloring |
+| **Prediction pipeline** | `webapp/predict.py` | ✅ M7c — SMILES → fragment → 3D features → predict |
 
 ---
 
@@ -53,8 +58,8 @@
 | M6b | **Change-type classification of R-groups** | ✅ Done | Sonnet |
 | M6c | **Interaction feature test (break 0.52 ceiling?)** | ✅ Done (ceiling holds) | Sonnet + Opus |
 | M7a | **Position-level reframe + ceiling test** | ✅ Done (NDCG@3=0.964, Hit@1=57%) | Opus |
-| M7b | **Pharmacophore homology grouping** | 🔲 | Opus |
-| M7c | **Webapp: SAR Sensitivity Explorer** | 🔲 | Sonnet |
+| M7b | **Pharmacophore homology grouping** | ✅ Done (no improvement — targets are too similar) | Opus |
+| M7c | **Webapp: SAR Sensitivity Explorer** | ✅ Done | Sonnet |
 
 ---
 
@@ -86,16 +91,20 @@
 | 2026-03-18 | M6b: R-group change-type classification | Built `change_type.py` module + `compute_change_types.py` CLI. 11-dim property vector per R-group: EWG/EDG detection (SMARTS), HBD/HBA counts, LogP, heavy atoms, rings, aromatic rings, fsp3. **376,299 unique R-groups classified in 3.7 min** (1,679 rg/s), 0 failures → `outputs/features/rgroup_props.parquet` (9.0 MB). Validated on medchem examples: F→OMe correctly shows EWG→EDG swap; Me→Ph captures ring/aromaticity gain; Ph→cHex shows aromaticity loss + sp3 gain. Cliff vs non-cliff deltas: cliffs have larger delta_heavy_atoms (+0.60), delta_ewg_count (+0.10), delta_lipophilicity (+0.08), delta_n_rings (+0.10) — consistent with M2b finding that bigger structural changes drive cliffs. |
 | 2026-03-18 | M6c: Interaction feature test — **ceiling NOT broken** | Built `prepare_evolve_data_v3.py` (joins 2D deltas + 3D context + change-type + interactions -> 127 features, 1.19M rows, 85.6 MB) and `ml_ceiling_v3.py` (14 experiments). **All combinations <= 0.5170, matching the original 8-feature baseline.** 3D context alone = 0.4124 (worse than random -- no within-group variance as predicted). Change-type deltas alone = 0.5108 (competitive but redundant with property deltas). Context x change_type interactions = 0.5032 (HGB already learns interactions natively). Adding features to baseline slightly hurts (0.5126-0.5155). Deeper HGB (500 iter, depth 8) = 0.5142. **Conclusion: the ~0.52 ceiling is a fundamental limit of target-agnostic ligand descriptors.** What makes a specific R-group swap cause a cliff depends on the protein binding pocket geometry, which no ligand-only feature captures. The path forward requires either target-specific models or protein-side features. |
 | 2026-03-19 | M7a: Position-level reframe — **breakthrough result** | Reframed question from "which R-group swap causes the biggest cliff?" (transformation-level) to "which position on a molecule is most SAR-sensitive?" (position-level). Aggregated 25M MMPs to 598K (mol_from, position, target) rows across 50 targets, 46K unique cores, 111K molecules. Features: 9 3D context + 2 core topology = 11 features. **Key finding: 3D context features that scored 0.41 (below random) at transformation level now score 0.946 NDCG@3 at position level.** Best model (HGB, 11 features): NDCG@3=0.964, Hit@1=57% (2.3x random 25%), Spearman=0.607. Position sensitivity generalizes across targets (leave-one-target-out). Within-molecule position range = 0.50 pActivity units (meaningful variance). Strongest signals: core_n_heavy (r=-0.51), core_n_rings (r=-0.45), n_heavy_4A (r=-0.38), n_aromatic_4A (r=-0.27). Interpretation: simpler, less crowded, less constrained positions are more SAR-sensitive -- the R-group represents a larger fraction of the binding interaction. |
+| 2026-03-19 | M7b: Pharmacophore homology grouping — **no improvement (informative negative)** | Built 28-dim SAR profile per target (14 change-type categories × {cliff_rate, mean_|Δp|}). **Targets are extremely similar:** pairwise Pearson mean=0.983, min=0.912, all >0.9. Hierarchical clustering (Ward linkage) tested k=5-8. **Experiment A (global + cluster_id):** best k=5 NDCG@3=0.9597 vs baseline 0.9593 — within noise (+0.0004). **Experiment A2 (one-hot clusters):** best k=7 NDCG@3=0.9601 (+0.0008). **Experiment B (within-cluster separate models):** all HURT performance (k=5: 0.9549, k=8: 0.9518) — less training data, no compensating signal. **Experiment C (SAR profile as features):** 0.9593 (identical to baseline). **Conclusion:** Position-level SAR sensitivity is governed by local 3D pharmacophore context, not target identity. The rules are truly general — all 50 targets respond to structural changes the same way at the position level. No target grouping needed; proceed directly to webapp with the target-agnostic model. |
+| 2026-03-19 | M7c: SAR Sensitivity Explorer webapp — **complete** | Built Streamlit webapp (`webapp/app.py`) with prediction pipeline (`webapp/predict.py`). Trained final HGB model on all 598K position rows (1 MB pickle). Pipeline: SMILES → find all fragmentable bonds → fragment → compute 3D pharmacophore context (9 features) + core topology (2 features) → HGB predict sensitivity → rank positions. Molecule visualization: 2D SVG with blue→red atom/bond coloring + rank labels (#1, #2...). Position ranking with expandable feature breakdowns per position. **Permutation feature importances:** core_n_heavy (45.4%), gasteiger_charge (14.1%), SASA (10.7%), core_n_rings (8.5%), n_aromatic_4A (4.6%), n_heavy_4A (4.6%). **Medchem validation:** Imatinib correctly identifies piperazine arm > methyl > hinge binder; Erlotinib highlights aniline bridge > acetylene tail > methoxyethoxy chains; Celecoxib flags pyrazole-tolyl junction; Diclofenac prioritizes chlorine positions; small molecules (aniline, biphenyl) show appropriately high sensitivity. Model shows larger cores → lower sensitivity (correct: R-group is smaller fraction of binding). 8 example drugs included. Run: `streamlit run webapp/app.py`. |
 
 ---
 
 ## Current Status
 
-**2026-03-19** — **M7a complete (positive result!).** The position-level reframe works. By asking "which position to modify first" instead of "which R-group swap causes the biggest cliff," we turned 3D context features from dead weight into powerful predictors. Hit@1=57% means the model correctly identifies the most SAR-sensitive position on a molecule more than half the time, generalizing across all 50 targets.
+**2026-03-19** — **M7c complete.** SAR Sensitivity Explorer webapp is built and running. All milestones M1–M7c are done. The core deliverable — a tool that takes any SMILES and predicts which positions are most SAR-sensitive — is functional and medchemically credible.
 
-**Next steps:**
-1. **M7b: Pharmacophore homology grouping** — compute target-target SAR profile similarity from the MMP data, cluster into pharmacophore-homologous groups, test whether group-conditioned models improve predictions further
-2. **M7c: Webapp** — build SAR Sensitivity Explorer using the position-level model (input SMILES -> heatmap of position sensitivity -> change-type recommendations per position)
+**Potential future work:**
+- Add ChEMBL MMP lookup to show actual historical modifications at each position
+- Deploy to a cloud service for team access
+- Add R-group recommendation (leverage change-type classification from M6b)
+- Publication-quality figures / validation against published SAR studies
 
 ---
 
@@ -104,15 +113,28 @@
 ### Step: M7a — ✅ DONE (2026-03-19)
 Position-level reframe validated. NDCG@3=0.964, Hit@1=57%, Spearman=0.607. See completed steps above.
 
-### Step: M7b — Pharmacophore Homology Grouping (NEXT)
-**Model:** Opus (scientific architecture)
-**Goal:** Compute target-target SAR profile similarity from MMP data. Cluster targets by pharmacophore homology (data-driven, no protein structures needed). Test whether group-conditioned models improve position sensitivity predictions.
-**Prompt:** "Compute SAR profile vectors for each target (change_type category -> mean cliff rate). Correlate across targets, cluster into pharmacophore-homologous groups, train group-conditioned HGB models, evaluate improvement over target-agnostic model."
+### Step: M7b — ✅ DONE (2026-03-19)
+Pharmacophore homology grouping — informative negative. All targets have r>0.91 SAR profiles. No cluster conditioning helps. Position sensitivity is truly target-agnostic.
 
-### Step: M7c — Webapp: SAR Sensitivity Explorer
+### Step: M7c — ✅ DONE (2026-03-19)
 **Model:** Sonnet (implementation)
-**Goal:** Build Streamlit/Gradio app. Input: SMILES. Output: molecule with positions colored by predicted SAR sensitivity. Click position for change-type recommendations.
-**Depends on:** M7a model (position sensitivity prediction) + optionally M7b (pharmacophore conditioning).
+**Depends on:** M7a model (target-agnostic position sensitivity, 11 features). M7b confirmed no target conditioning needed.
+**Prompt to use:**
+
+> Read CONTINUATION_PLAN.md and PROGRESS_LOG.md. Then implement M7c: the SAR Sensitivity Explorer webapp.
+>
+> Context: M7a showed position-level sensitivity prediction works (NDCG@3=0.964, Hit@1=57%). M7b confirmed this is target-agnostic — no cluster conditioning needed. Build a Streamlit/Gradio webapp that:
+>
+> 1. Takes a SMILES input
+> 2. Generates a 3D conformer (ETKDG)
+> 3. Fragments at all single-cut positions (rdMMPA)
+> 4. Computes 3D pharmacophore context features at each attachment point
+> 5. Predicts position sensitivity using the trained HGB model
+> 6. Displays: molecule with positions colored by sensitivity + ranked list per position
+>
+> Train a final HGB model on ALL 598K position data rows (no holdout — the leave-one-target-out already validated generalization). Save as a pickle for the webapp.
+>
+> Key files: scripts/prepare_position_data.py (data pipeline), evolve/position_ceiling.py (model training pattern), src/activity_cliffs/features/context_3d.py (3D feature computation).
 
 ---
 
