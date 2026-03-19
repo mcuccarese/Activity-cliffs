@@ -201,8 +201,8 @@ Previous attempts failed because env_hash was constant within a mol_from group �
 | M4 | Feature engineering (2D) | ✅ Done | — |
 | M5 | ShinkaEvolve + manual evolution + ceiling analysis | ✅ Done | — |
 | M6a | **3D context features at attachment points** | ✅ Done | Sonnet |
-| M6b | **Change-type classification of R-groups** | 🔲 NEXT | Sonnet |
-| M6c | **Interaction feature test (break the 0.52 ceiling?)** | 🔲 | Sonnet (impl) + Opus (interpret) |
+| M6b | **Change-type classification of R-groups** | ✅ Done | Sonnet |
+| M6c | **Interaction feature test (break the 0.52 ceiling?)** | ✅ Done (ceiling holds) | Sonnet + Opus |
 | M7 | **Webapp: SAR Sensitivity Explorer** | 🔲 | Sonnet |
 
 ## 7. Model Decision Guide
