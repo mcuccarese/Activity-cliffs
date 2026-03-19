@@ -28,6 +28,8 @@
 | **Eval data** | `evolve/eval_data/eval_data.npz` | ✅ 1.19M rows, 50 targets, 12 features, 14.8 MB |
 | **Manual evolution harness** | `evolve/manual_evolve.py` | ✅ Claude-as-LLM evolution loop |
 | **Candidate functions** | `evolve/candidates/gen1_*.py`, `gen2_*.py` | ✅ 16 candidates tested |
+| **3D context features** | `src/activity_cliffs/features/context_3d.py` | ✅ M6a — done |
+| **3D context lookup** | `outputs/features/context_3d.parquet` | ✅ 104,346 cores × 9 features, 3.1 MB |
 
 ---
 
@@ -40,7 +42,7 @@
 | M3 | Scale MMP extraction to 50 targets | ✅ Done | — |
 | M4 | Feature engineering (2D) | ✅ Done | — |
 | M5 | ShinkaEvolve + manual evolution + ML ceiling analysis | ✅ Done | — |
-| M6a | **3D context features at attachment points** | 🔲 NEXT | Sonnet |
+| M6a | **3D context features at attachment points** | ✅ Done | Sonnet |
 | M6b | **Change-type classification of R-groups** | 🔲 | Sonnet |
 | M6c | **Interaction feature test (break 0.52 ceiling?)** | 🔲 | Sonnet + Opus |
 | M7 | **Webapp: SAR Sensitivity Explorer** | 🔲 | Sonnet |
@@ -71,53 +73,24 @@
 | 2026-03-17 | M5c: Enriched feature pipeline (v2) | Built `scripts/prepare_evolve_data_v2.py` adding 35 new features: FP XOR PCA (20d, 20% variance), 12 FG net-change flags (halogen, amine, hydroxyl, carboxyl, amide, sulfonamide, nitro, nitrile, aromatic, methyl, ether, carbonyl), log transform frequency, R-group size ratio, max size. Saved as `evolve/eval_data/eval_data_v2.npz` (151.6 MB, 1.19M rows x 43 features). |
 | 2026-03-17 | M5c: ML ceiling measurement (v2) — enriched features | **Enriched features DO NOT break the ceiling.** FG flags only = 0.4935 (worse). XOR PCA only = 0.5058 (worse). Abs deltas + FG = 0.5144 (tied). All 43 features = 0.5151 (tied). Best mix = 0.5137 (tied). **Original 8 abs deltas + dissim = 0.5170 remains best.** The ~0.52 ceiling is a fundamental limit of target-agnostic 2D descriptors. |
 | 2026-03-18 | M6a: Architecture decision — 3D context × change-type hybrid | Reviewed all 3D featurization methods (classical through Uni-Mol/SchNet). Chose Hybrid Approach C: `interpretable = 3D_context @ W @ change_type` + `learned_residual = MLP(atom_embed, rgroup_embed)`. Key insight: context × change_type interaction provides within-group variance (the missing piece). Webapp vision: input SMILES → positions colored by SAR sensitivity → ranked change-type recommendations. Session died to 529 errors before updating files — recovered in next session. |
+| 2026-03-18 | M6a: 3D pharmacophore context features computed | Built `context_3d.py` module + `compute_3d_context.py` CLI. For each of 104,346 unique cores: replaced [*:1] with H, ETKDG conformer + MMFF, computed 9 features at attachment atom (donor/acceptor/hydrophobic/aromatic counts within 4Å, SASA, Gasteiger charge, rotatable bonds within 2 bonds, aromatic flag, heavy atom density). **0 parse failures, 99.99% got 3D features** (13 topological-only fallback). 53 min on single CPU (32.8 cores/s). Key stats: 42% aromatic attachment, mean charge -0.077, mean 6.4 heavy atoms within 4Å. Bugs fixed during dev: Gasteiger NaN from dummy atoms (compute on capped mol), GetShortestPath self-loop crash, GetTotalNumHs=0 after AddHs (count bonded H neighbors). |
 
 ---
 
 ## Current Status
 
-**2026-03-18** — M6a architecture decision complete (discussed in session, lost to context limit). Chose **Hybrid Approach C: 3D context × change-type interaction + learned residual**.
+**2026-03-18** — **M6a complete.** 3D pharmacophore context features computed for all 104,346 unique cores → `outputs/features/context_3d.parquet` (3.1 MB). 9 interpretable features per attachment point: pharmacophore environment (donor/acceptor/hydrophobic/aromatic counts within 4Å), steric accessibility (SASA), electrostatics (Gasteiger charge), local rigidity (rotatable bonds within 2 bonds), aromatic context, steric density.
 
-**Key architectural insight:** The 2D ceiling (~0.52) exists because env_hash is constant within a mol_from group — NDCG measures within-group ranking, so features that don't vary within the group contribute zero signal. The **context × change_type cross-product** solves this: even when all transforms share the same attachment point (same 3D context), different R-group types (EWG vs lipophilic vs polar) interact differently with that context. The within-group variance comes from the **interaction term**, not from either factor alone. This was the missing piece.
-
-**Webapp vision:** Input any compound → fragment at all positions → color positions by SAR sensitivity → click a position to see ranked change-type recommendations ("Try EWG (0.72) > lipophilic (0.65)"). Predicts cliff probability, not direction.
+**Next:** M6b — classify R-group transforms into medchem change types (EWG/EDG/lipophilic/polar/size/ring changes). Then M6c tests whether context × change_type interaction features break the 0.52 NDCG@5 ceiling.
 
 ---
 
 ## Next Steps
 
-### Step: M6a — Compute 3D pharmacophore context features
-**Model:** Sonnet
-**Prompt:**
-```
-Read CONTINUATION_PLAN.md and PROGRESS_LOG.md. We've decided on a 3D context ×
-change-type hybrid architecture to break the 0.52 NDCG@5 ceiling (full details
-in the continuation plan).
+### Step: M6a — ✅ DONE (2026-03-18)
+3D pharmacophore context features computed for all 104,346 unique cores. See completed steps above.
 
-Build a script to compute 3D pharmacophore context features at each MMP
-attachment point. For each unique core_smiles in our MMP dataset:
-
-1. Parse the core SMILES (contains [*:1] attachment point)
-2. Generate a 3D conformer with ETKDG (AllChem.EmbedMolecule + MMFF optimize)
-3. At the attachment atom ([*:1] or its neighbor), compute:
-   a. Pharmacophore environment: count donor/acceptor/hydrophobic/aromatic
-      features within 4Å of the attachment atom
-   b. Steric accessibility: SASA or Labute ASA contribution at/near cut atom
-   c. Electrostatic character: Gasteiger partial charge at the neighbor atom
-   d. Local rigidity: rotatable bonds within 2 bonds of attachment
-   e. Aromatic context: is the attachment on an aromatic ring?
-
-4. Save as a lookup table (core_smiles → feature vector) in parquet or npz
-
-Start with a small test (100 cores from EGFR) to validate the approach,
-then scale to all ~104K unique cores. The features should be 5-10 interpretable
-floats per attachment point.
-
-Use the conda env python: c:/Users/mcucc/miniforge3/envs/activity-cliffs/python
-ChEMBL DB: "D:\Mike project data\Activity cliffs\chembl_36\chembl_36_sqlite\chembl_36.db"
-```
-
-### Step: M6b — Classify R-group transforms into change types
+### Step: M6b — Classify R-group transforms into change types (NEXT)
 **Model:** Sonnet
 **Prompt:**
 ```

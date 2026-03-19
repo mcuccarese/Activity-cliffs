@@ -134,7 +134,7 @@ Previous attempts failed because env_hash was constant within a mol_from group �
 - M5: ShinkaEvolve integration + manual evolution (16 candidates, best NDCG@5 = 0.5178)
 - M5c: ML ceiling confirmed at ~0.52 with 2D features
 
-### M6a — 3D Context Features (NEXT)
+### M6a — 3D Context Features (DONE 2026-03-18)
 
 **Goal:** Compute local 3D pharmacophore context features at each attachment point for the ~104K unique cores in the dataset.
 
@@ -200,8 +200,8 @@ Previous attempts failed because env_hash was constant within a mol_from group �
 | M3 | Scale to 50 targets | ✅ Done | — |
 | M4 | Feature engineering (2D) | ✅ Done | — |
 | M5 | ShinkaEvolve + manual evolution + ceiling analysis | ✅ Done | — |
-| M6a | **3D context features at attachment points** | 🔲 NEXT | Sonnet |
-| M6b | **Change-type classification of R-groups** | 🔲 | Sonnet |
+| M6a | **3D context features at attachment points** | ✅ Done | Sonnet |
+| M6b | **Change-type classification of R-groups** | 🔲 NEXT | Sonnet |
 | M6c | **Interaction feature test (break the 0.52 ceiling?)** | 🔲 | Sonnet (impl) + Opus (interpret) |
 | M7 | **Webapp: SAR Sensitivity Explorer** | 🔲 | Sonnet |
 
