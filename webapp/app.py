@@ -50,14 +50,17 @@ with open(META_PATH) as f:
 # ── Example molecules ────────────────────────────────────────────────────────
 
 EXAMPLES = {
+    # Approved drugs
     "Imatinib (BCR-ABL)": "CC1=C(C=C(C=C1)NC(=O)C2=CC=C(C=C2)CN3CCN(CC3)C)NC4=NC=CC(=N4)C5=CN=CC=C5",
-    "Erlotinib (EGFR)": "COCCOC1=CC2=C(C=C1OCCOC)C(=NC=N2)NC3=CC(=CC=C3)C#C",
     "Celecoxib (COX-2)": "CC1=CC=C(C=C1)C2=CC(=NN2C3=CC=C(C=C3)S(=O)(=O)N)C(F)(F)F",
-    "Atorvastatin (HMG-CoA)": "CC(C)C1=C(C(=C(N1CCC(CC(CC(=O)O)O)O)C2=CC=C(C=C2)F)C3=CC=CC=C3)C(=O)NC4=CC=CC=C4",
-    "Sorafenib (Multi-kinase)": "CNC(=O)C1=CC(=CC=C1)OC2=CC=C(C=C2)NC(=O)NC3=CC(=C(C=C3)Cl)C(F)(F)F",
-    "Diclofenac (COX)": "OC(=O)Cc1ccccc1Nc1c(Cl)cccc1Cl",
-    "Simple aniline": "Nc1ccccc1",
-    "4-Aminobiphenyl": "Nc1ccc(-c2ccccc2)cc1",
+    "Sorafenib (multi-kinase)": "CNC(=O)C1=CC(=CC=C1)OC2=CC=C(C=C2)NC(=O)NC3=CC(=C(C=C3)Cl)C(F)(F)F",
+    # Screening deck scaffolds
+    "Benzimidazole sulfonamide": "Cc1nc2ccccc2n1S(=O)(=O)Nc1ccc(F)cc1",
+    "Piperazine aryl amide": "O=C(c1ccc(F)cc1)N1CCN(c2ccc(Cl)cc2)CC1",
+    "Pyrimidine aniline": "Cc1ccnc(Nc2ccc(Cl)cc2F)n1",
+    "Morpholine oxadiazole": "Cc1nc(-c2ccc(N3CCOCC3)cc2)no1",
+    "Thiophene carboxamide": "O=C(Nc1cccc(Cl)c1)c1cccs1",
+    "Triazole phenyl ether": "Clc1ccc(Oc2cccc(-n3cncn3)c2)cc1",
 }
 
 # ── Feature descriptions for chemists ────────────────────────────────────────
@@ -427,22 +430,25 @@ rules apply across kinases, GPCRs, proteases, etc.
         current_pill = pill_options[0]
     selected_rank = pill_options.index(current_pill)
 
-    # ── Molecule SVG (full width) ─────────────────────────────────────────
+    # ── Molecule SVG (centered, fixed size) ───────────────────────────────
     st.subheader("Position Sensitivity Map")
-    svg = draw_molecule_with_sensitivity(smiles, results, selected_rank=selected_rank)
-    if svg:
-        st.image(svg, use_container_width=True)
-
-    st.markdown(
-        '<div style="display:flex;align-items:center;gap:8px;margin-top:-10px;">'
-        '<span style="color:#334de6;font-weight:bold;">● Low sensitivity</span>'
-        '<span style="color:#999;">→</span>'
-        '<span style="color:#e63333;font-weight:bold;">● High sensitivity</span>'
-        '<span style="color:#999;font-size:0.85em;margin-left:12px;">'
-        'Larger circle = currently selected position</span>'
-        '</div>',
-        unsafe_allow_html=True,
-    )
+    _, col_mol, _ = st.columns([1, 3, 1])
+    with col_mol:
+        svg = draw_molecule_with_sensitivity(
+            smiles, results, width=480, height=300, selected_rank=selected_rank
+        )
+        if svg:
+            st.image(svg, use_container_width=True)
+        st.markdown(
+            '<div style="display:flex;align-items:center;gap:8px;margin-top:-6px;">'
+            '<span style="color:#334de6;font-weight:bold;">● Low</span>'
+            '<span style="color:#999;">→</span>'
+            '<span style="color:#e63333;font-weight:bold;">● High sensitivity</span>'
+            '<span style="color:#999;font-size:0.82em;margin-left:10px;">'
+            'Larger circle = selected position</span>'
+            '</div>',
+            unsafe_allow_html=True,
+        )
 
     st.divider()
 
