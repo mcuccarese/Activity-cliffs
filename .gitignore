@@ -20,7 +20,7 @@ outputs/
 
 # Large generated artifacts (exceed GitHub file size limits)
 evolve/eval_data/*.npz
-webapp/model/*.pkl
+webapp/model/evidence_index.pkl
 
 # OS / editor
 .DS_Store
