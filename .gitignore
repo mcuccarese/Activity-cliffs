@@ -18,6 +18,10 @@ env/
 data/
 outputs/
 
+# Large generated artifacts (exceed GitHub file size limits)
+evolve/eval_data/*.npz
+webapp/model/*.pkl
+
 # OS / editor
 .DS_Store
 Thumbs.db
