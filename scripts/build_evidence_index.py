@@ -122,9 +122,30 @@ def main(
     top_k_per_core: int = typer.Option(
         5, help="Max evidence MMPs to store per core",
     ),
+    chembl_sqlite: Path = typer.Option(
+        None,
+        help="Path to ChEMBL SQLite DB for compound ChEMBL ID lookup",
+    ),
 ) -> None:
     """Build evidence index: top MMPs per core + nearest-neighbor model."""
+    import sqlite3
     t_start = time.perf_counter()
+
+    # ── Step 0: Build molregno → compound ChEMBL ID map (optional) ───────
+    molregno_to_chembl: dict[int, str] = {}
+    if chembl_sqlite is not None and Path(chembl_sqlite).exists():
+        logger.info("Building molregno→chembl_id map from %s ...", chembl_sqlite)
+        conn = sqlite3.connect(chembl_sqlite)
+        try:
+            rows = conn.execute(
+                "SELECT molregno, chembl_id FROM molecule_dictionary"
+            ).fetchall()
+            molregno_to_chembl = {r[0]: r[1] for r in rows}
+        finally:
+            conn.close()
+        logger.info("  %d compound IDs loaded", len(molregno_to_chembl))
+    else:
+        logger.info("No ChEMBL SQLite provided — compound IDs will be empty")
 
     # ── Step 1: Load 3D context features ─────────────────────────────────
     logger.info("Loading 3D context from %s ...", context_3d_path)
@@ -160,6 +181,8 @@ def main(
         "core_smiles", "target_chembl_id",
         "rgroup_from", "rgroup_to",
         "delta_pActivity", "abs_delta_pActivity",
+        "smiles_from", "smiles_to",
+        "mol_from", "mol_to",
     ]
     mmps = pd.read_parquet(mmps_path, columns=cols_needed)
     logger.info("  %s rows loaded", f"{len(mmps):,}")
@@ -185,6 +208,8 @@ def main(
         for _, row in grp.iterrows():
             target_id = row["target_chembl_id"]
             target_name = TARGET_NAMES.get(target_id, target_id)
+            mol_from = int(row["mol_from"]) if pd.notna(row["mol_from"]) else None
+            mol_to = int(row["mol_to"]) if pd.notna(row["mol_to"]) else None
             examples.append({
                 "target_id": target_id,
                 "target_name": target_name,
@@ -192,6 +217,10 @@ def main(
                 "rgroup_to": row["rgroup_to"],
                 "delta_pActivity": float(row["delta_pActivity"]),
                 "abs_delta": float(row["abs_delta_pActivity"]),
+                "smiles_from": str(row["smiles_from"]) if pd.notna(row.get("smiles_from")) else "",
+                "smiles_to": str(row["smiles_to"]) if pd.notna(row.get("smiles_to")) else "",
+                "molecule_chembl_id_from": molregno_to_chembl.get(mol_from, "") if mol_from else "",
+                "molecule_chembl_id_to": molregno_to_chembl.get(mol_to, "") if mol_to else "",
             })
         evidence_lookup[str(core_smi)] = examples
     del evidence

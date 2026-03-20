@@ -1,5 +1,5 @@
 """
-SAR Sensitivity Explorer — M7c Webapp
+SAR Sensitivity Explorer — M8 Interactive Explainability
 
 Input a SMILES → see which positions on the molecule are most sensitive
 to structural modification, based on 25M matched molecular pairs from
@@ -10,14 +10,15 @@ Run:
 """
 from __future__ import annotations
 
+import base64
 import json
 import sys
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import streamlit as st
 from rdkit import Chem
-from rdkit.Chem import Draw
 from rdkit.Chem.Draw import rdMolDraw2D
 
 # Ensure the project source is importable
@@ -82,16 +83,15 @@ def sensitivity_color(value: float, vmin: float, vmax: float) -> tuple[float, fl
     """Map sensitivity to a blue→white→red color. Returns (r, g, b) in [0, 1]."""
     if vmax == vmin:
         return (0.85, 0.85, 0.85)
-    t = (value - vmin) / (vmax - vmin)  # 0 = least sensitive, 1 = most
+    t = (value - vmin) / (vmax - vmin)
     t = max(0.0, min(1.0, t))
-    # Blue (cold) → White → Red (hot)
     if t < 0.5:
-        s = t * 2  # 0→1 over the blue-to-white range
+        s = t * 2
         r = 0.2 + 0.8 * s
         g = 0.3 + 0.7 * s
         b = 0.9 + 0.1 * s
     else:
-        s = (t - 0.5) * 2  # 0→1 over the white-to-red range
+        s = (t - 0.5) * 2
         r = 1.0
         g = 1.0 - 0.7 * s
         b = 1.0 - 0.8 * s
@@ -102,17 +102,21 @@ def draw_molecule_with_sensitivity(
     smiles: str,
     results: list[PositionResult],
     width: int = 700,
-    height: int = 450,
+    height: int = 420,
     show_rank_labels: bool = True,
+    selected_rank: int | None = None,
 ) -> str:
-    """Draw molecule SVG with atoms colored by predicted sensitivity."""
+    """Draw molecule SVG with atoms colored by predicted sensitivity.
+
+    selected_rank: 0-based index into results for the currently selected position.
+    That position gets a larger highlight radius to visually emphasize it.
+    """
     mol = Chem.MolFromSmiles(smiles)
     if mol is None:
         return ""
 
-    # Build atom → sensitivity mapping
     atom_sens = {}
-    atom_rank = {}  # atom_idx → rank (1-based)
+    atom_rank = {}
     for i, r in enumerate(results):
         atom_sens[r.atom_idx] = r.sensitivity
         atom_rank[r.atom_idx] = i + 1
@@ -123,27 +127,24 @@ def draw_molecule_with_sensitivity(
     vmin = min(atom_sens.values())
     vmax = max(atom_sens.values())
 
-    # Expand coloring: also lightly color the R-group side atom
     atom_colors = {}
     atom_radii = {}
     highlight_atoms = []
 
-    for r in results:
+    for i, r in enumerate(results):
         color = sensitivity_color(r.sensitivity, vmin, vmax)
+        is_selected = (selected_rank is not None and i == selected_rank)
         atom_colors[r.atom_idx] = color
-        atom_radii[r.atom_idx] = 0.4
+        atom_radii[r.atom_idx] = 0.65 if is_selected else 0.4
         highlight_atoms.append(r.atom_idx)
 
-        # Lightly color the R-group neighbor too
         if r.neighbor_idx not in atom_colors:
-            # Fade toward white
             nc = sensitivity_color(r.sensitivity, vmin, vmax)
             faded = tuple(0.5 + 0.5 * c for c in nc)
             atom_colors[r.neighbor_idx] = faded
-            atom_radii[r.neighbor_idx] = 0.25
+            atom_radii[r.neighbor_idx] = 0.35 if is_selected else 0.25
             highlight_atoms.append(r.neighbor_idx)
 
-    # Also highlight the cut bonds
     highlight_bonds = []
     bond_colors = {}
     for r in results:
@@ -151,15 +152,12 @@ def draw_molecule_with_sensitivity(
         if bond is not None:
             bidx = bond.GetIdx()
             highlight_bonds.append(bidx)
-            color = sensitivity_color(r.sensitivity, vmin, vmax)
-            bond_colors[bidx] = color
+            bond_colors[bidx] = sensitivity_color(r.sensitivity, vmin, vmax)
 
-    # Add rank labels as atom notes (shows "#1", "#2" etc. near each position)
     if show_rank_labels:
         for atom_idx, rank in atom_rank.items():
             mol.GetAtomWithIdx(atom_idx).SetProp("atomNote", f"#{rank}")
 
-    # Draw
     drawer = rdMolDraw2D.MolDraw2DSVG(width, height)
     opts = drawer.drawOptions()
     opts.bondLineWidth = 2.5
@@ -179,68 +177,152 @@ def draw_molecule_with_sensitivity(
     return drawer.GetDrawingText()
 
 
+def _smiles_to_svg(smiles: str, width: int = 200, height: int = 140) -> str:
+    """Render a SMILES string as an SVG. Returns empty string on failure."""
+    if not smiles:
+        return ""
+    mol = Chem.MolFromSmiles(smiles)
+    if mol is None:
+        return ""
+    try:
+        drawer = rdMolDraw2D.MolDraw2DSVG(width, height)
+        drawer.drawOptions().padding = 0.15
+        drawer.DrawMolecule(mol)
+        drawer.FinishDrawing()
+        return drawer.GetDrawingText()
+    except Exception:
+        return ""
+
+
+def _svg_to_img_html(svg: str, width: str = "180px") -> str:
+    """Convert an SVG string to a base64-encoded HTML img tag."""
+    if not svg:
+        return (
+            f'<div style="width:{width};height:110px;background:#f3f4f6;'
+            f'border-radius:4px;display:flex;align-items:center;'
+            f'justify-content:center;color:#9ca3af;font-size:0.8em;">No structure</div>'
+        )
+    b64 = base64.b64encode(svg.encode("utf-8")).decode("ascii")
+    return (
+        f'<img src="data:image/svg+xml;base64,{b64}" width="{width}" '
+        f'style="background:white;border-radius:6px;border:1px solid #e5e7eb;" />'
+    )
+
+
+# ── ChEMBL link helpers ───────────────────────────────────────────────────────
+
+def _target_link_html(target_id: str, target_name: str) -> str:
+    """Return an HTML anchor linking to the ChEMBL target report card."""
+    url = f"https://www.ebi.ac.uk/chembl/target_report_card/{target_id}"
+    return (
+        f'<a href="{url}" target="_blank" rel="noopener" '
+        f'style="color:#1d4ed8;text-decoration:none;font-weight:bold;">'
+        f'{target_name} ({target_id}) ↗</a>'
+    )
+
+
+def _compound_link_html(chembl_id: str) -> str:
+    """Return an HTML anchor linking to the ChEMBL compound report card."""
+    if not chembl_id:
+        return ""
+    url = f"https://www.ebi.ac.uk/chembl/compound_report_card/{chembl_id}"
+    return (
+        f'<a href="{url}" target="_blank" rel="noopener" '
+        f'style="color:#6b7280;font-size:0.78em;text-decoration:none;">'
+        f'{chembl_id} ↗</a>'
+    )
+
+
 # ── Evidence rendering ────────────────────────────────────────────────────────
-
-def _format_rgroup(smi: str) -> str:
-    """Format R-group SMILES for display, replacing [*:1] with R."""
-    return smi.replace("[*:1]", "R-")
-
 
 def _delta_color(delta: float) -> str:
     """CSS color for a ΔpActivity value."""
     if abs(delta) >= 1.5:
-        return "#e63333" if delta > 0 else "#334de6"  # red / blue
+        return "#e63333" if delta > 0 else "#334de6"
     elif abs(delta) >= 1.0:
-        return "#d97706" if delta > 0 else "#2563eb"  # amber / blue
+        return "#d97706" if delta > 0 else "#2563eb"
     else:
-        return "#6b7280"  # gray
+        return "#6b7280"
 
 
 def _render_evidence(evidence: list[EvidenceExample]) -> None:
-    """Render evidence examples as a styled list."""
+    """Render evidence examples as styled cards with structures and ChEMBL links."""
     exact = [e for e in evidence if e.source == "exact"]
     similar = [e for e in evidence if e.source == "similar"]
 
-    if exact:
-        st.caption("Exact core match — same scaffold exists in ChEMBL:")
-        for e in exact:
+    def _render_group(examples: list[EvidenceExample], caption: str) -> None:
+        if not examples:
+            return
+        st.caption(caption)
+        for e in examples:
             delta_sign = "+" if e.delta_pActivity > 0 else ""
             color = _delta_color(e.delta_pActivity)
-            st.markdown(
-                f'<div style="margin-bottom:4px;padding:6px 10px;background:#f8f9fa;'
-                f'border-left:3px solid {color};border-radius:4px;font-size:0.9em;">'
-                f'<strong>{e.target_name}</strong> ({e.target_id}): '
-                f'<code>{_format_rgroup(e.rgroup_from)}</code> → '
-                f'<code>{_format_rgroup(e.rgroup_to)}</code> &nbsp; '
-                f'<span style="color:{color};font-weight:bold;">'
-                f'ΔpActivity = {delta_sign}{e.delta_pActivity:.2f}</span>'
-                f'</div>',
-                unsafe_allow_html=True,
-            )
 
-    if similar:
-        label = "Similar pharmacophore context:" if not exact else "Similar positions on other scaffolds:"
-        st.caption(label)
-        for e in similar:
-            delta_sign = "+" if e.delta_pActivity > 0 else ""
-            color = _delta_color(e.delta_pActivity)
-            sim_pct = e.similarity * 100
-            st.markdown(
-                f'<div style="margin-bottom:4px;padding:6px 10px;background:#f8f9fa;'
-                f'border-left:3px solid {color};border-radius:4px;font-size:0.9em;">'
-                f'<strong>{e.target_name}</strong> ({e.target_id}): '
-                f'<code>{_format_rgroup(e.rgroup_from)}</code> → '
-                f'<code>{_format_rgroup(e.rgroup_to)}</code> &nbsp; '
-                f'<span style="color:{color};font-weight:bold;">'
-                f'ΔpActivity = {delta_sign}{e.delta_pActivity:.2f}</span>'
-                f' &nbsp;<span style="color:#9ca3af;font-size:0.85em;">'
-                f'({sim_pct:.0f}% similar)</span>'
-                f'</div>',
-                unsafe_allow_html=True,
-            )
+            # Prefer full molecule SMILES; fall back to R-group fragments
+            use_full = bool(e.smiles_from and e.smiles_to)
+            if use_full:
+                svg_from = _smiles_to_svg(e.smiles_from, 200, 145)
+                svg_to = _smiles_to_svg(e.smiles_to, 200, 145)
+                img_width = "190px"
+            else:
+                svg_from = _smiles_to_svg(e.rgroup_from.replace("[*:1]", "[*]"), 130, 100)
+                svg_to = _smiles_to_svg(e.rgroup_to.replace("[*:1]", "[*]"), 130, 100)
+                img_width = "120px"
 
+            img_from = _svg_to_img_html(svg_from, img_width)
+            img_to = _svg_to_img_html(svg_to, img_width)
+
+            link_from = _compound_link_html(e.molecule_chembl_id_from)
+            link_to = _compound_link_html(e.molecule_chembl_id_to)
+
+            sim_html = ""
+            if e.source == "similar":
+                sim_pct = e.similarity * 100
+                sim_html = (
+                    f'<span style="color:#9ca3af;font-size:0.82em;">'
+                    f'({sim_pct:.0f}% pharmacophore similarity)</span>'
+                )
+
+            target_html = _target_link_html(e.target_id, e.target_name)
+
+            card = (
+                f'<div style="margin-bottom:10px;padding:10px 14px;background:#f8f9fa;'
+                f'border-left:3px solid {color};border-radius:6px;">'
+                f'<div style="display:flex;justify-content:space-between;'
+                f'align-items:center;margin-bottom:8px;">'
+                f'<div>{target_html} {sim_html}</div>'
+                f'<div style="color:{color};font-weight:bold;font-size:1.05em;">'
+                f'ΔpActivity = {delta_sign}{e.delta_pActivity:.2f}</div>'
+                f'</div>'
+                f'<div style="display:flex;align-items:center;gap:10px;">'
+                f'<div style="text-align:center;">{img_from}'
+                f'<div style="margin-top:3px;">{link_from}</div></div>'
+                f'<div style="font-size:1.5em;color:#9ca3af;padding-bottom:20px;">→</div>'
+                f'<div style="text-align:center;">{img_to}'
+                f'<div style="margin-top:3px;">{link_to}</div></div>'
+                f'</div>'
+                f'</div>'
+            )
+            st.markdown(card, unsafe_allow_html=True)
+
+    _render_group(exact, "Exact core match — same scaffold exists in ChEMBL:")
+    _render_group(
+        similar,
+        "Similar pharmacophore context:" if not exact else "Similar positions on other scaffolds:",
+    )
     if not exact and not similar:
         st.caption("No evidence examples found for this position.")
+
+
+# ── Position pill badge ───────────────────────────────────────────────────────
+
+def _badge(label: str) -> str:
+    if label in ("Very High", "High"):
+        return "🔴"
+    elif label == "Moderate":
+        return "🟡"
+    else:
+        return "🔵"
 
 
 # ── Main app ─────────────────────────────────────────────────────────────────
@@ -312,7 +394,6 @@ rules apply across kinases, GPCRs, proteases, etc.
         st.info("Enter a SMILES or click an example molecule to get started.")
         return
 
-    # Validate
     mol = Chem.MolFromSmiles(smiles)
     if mol is None:
         st.error("Invalid SMILES. Please check the input.")
@@ -329,79 +410,93 @@ rules apply across kinases, GPCRs, proteases, etc.
         )
         return
 
-    # ── Results ───────────────────────────────────────────────────────────
-    col_mol, col_table = st.columns([1.2, 1])
+    # ── Build pill options ────────────────────────────────────────────────
+    pill_options = [
+        f"#{i + 1} {_badge(sensitivity_to_label(r.sensitivity))} {r.sensitivity:.2f}"
+        for i, r in enumerate(results)
+    ]
 
-    with col_mol:
-        st.subheader("Position Sensitivity Map")
-        svg = draw_molecule_with_sensitivity(smiles, results)
-        if svg:
-            st.image(svg, use_container_width=True)
+    # Reset pill selection when SMILES changes
+    if st.session_state.get("_pills_smiles") != smiles:
+        st.session_state["_pills_smiles"] = smiles
+        st.session_state["pos_pills"] = pill_options[0]
 
-        # Color legend
-        st.markdown(
-            '<div style="display:flex;align-items:center;gap:8px;margin-top:-10px;">'
-            '<span style="color:#334de6;font-weight:bold;">● Low sensitivity</span>'
-            '<span style="color:#999;">→</span>'
-            '<span style="color:#e63333;font-weight:bold;">● High sensitivity</span>'
-            '</div>',
-            unsafe_allow_html=True,
+    # Read current selection before rendering pills (so SVG can use it)
+    current_pill = st.session_state.get("pos_pills", pill_options[0])
+    if current_pill not in pill_options:
+        current_pill = pill_options[0]
+    selected_rank = pill_options.index(current_pill)
+
+    # ── Molecule SVG (full width) ─────────────────────────────────────────
+    st.subheader("Position Sensitivity Map")
+    svg = draw_molecule_with_sensitivity(smiles, results, selected_rank=selected_rank)
+    if svg:
+        st.image(svg, use_container_width=True)
+
+    st.markdown(
+        '<div style="display:flex;align-items:center;gap:8px;margin-top:-10px;">'
+        '<span style="color:#334de6;font-weight:bold;">● Low sensitivity</span>'
+        '<span style="color:#999;">→</span>'
+        '<span style="color:#e63333;font-weight:bold;">● High sensitivity</span>'
+        '<span style="color:#999;font-size:0.85em;margin-left:12px;">'
+        'Larger circle = currently selected position</span>'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+
+    st.divider()
+
+    # ── Position pills selector ───────────────────────────────────────────
+    st.pills(
+        "Select a position to explore:",
+        pill_options,
+        key="pos_pills",
+        selection_mode="single",
+    )
+
+    # Re-read after widget render (user may have just clicked)
+    current_pill = st.session_state.get("pos_pills", pill_options[0])
+    if current_pill not in pill_options:
+        current_pill = pill_options[0]
+    selected_rank = pill_options.index(current_pill)
+    selected_r = results[selected_rank]
+
+    # ── Detail panel ──────────────────────────────────────────────────────
+    label = sensitivity_to_label(selected_r.sensitivity)
+    st.subheader(
+        f"Position #{selected_rank + 1} — {label} sensitivity "
+        f"({selected_r.sensitivity:.2f} | {selected_r.percentile:.0f}th percentile)"
+    )
+    st.caption(f"R-group at this position: `{selected_r.rgroup_smiles}`  |  "
+               f"Cut bond: atom {selected_r.atom_idx} — atom {selected_r.neighbor_idx}")
+
+    col_features, col_evidence = st.columns([1, 1.6])
+
+    with col_features:
+        st.markdown("**Feature breakdown**")
+        feat_rows = []
+        for fname in FEATURE_NAMES:
+            val = selected_r.features.get(fname, 0.0)
+            short, desc = FEATURE_DESCRIPTIONS.get(fname, (fname, ""))
+            feat_rows.append({"Feature": short, "Value": f"{val:.3f}", "Description": desc})
+
+        st.dataframe(
+            pd.DataFrame(feat_rows),
+            hide_index=True,
+            use_container_width=True,
         )
 
-    with col_table:
-        st.subheader("Position Ranking")
-
-        for i, r in enumerate(results):
-            label = sensitivity_to_label(r.sensitivity)
-
-            # Color indicator
-            if label in ("Very High", "High"):
-                badge = "🔴"
-            elif label == "Moderate":
-                badge = "🟡"
-            else:
-                badge = "🔵"
-
-            with st.expander(
-                f"{badge} **#{i+1}** — Sensitivity: **{r.sensitivity:.2f}** ({label}) "
-                f"| R-group: `{r.rgroup_smiles}`",
-                expanded=(i < 3),
-            ):
-                c1, c2 = st.columns(2)
-                with c1:
-                    st.markdown(f"**Atom index:** {r.atom_idx}")
-                    st.markdown(f"**Percentile:** {r.percentile:.0f}th")
-                    st.markdown(f"**Cut bond:** atom {r.atom_idx} — atom {r.neighbor_idx}")
-                with c2:
-                    st.markdown(f"**Core size:** {r.features.get('core_n_heavy', 0):.0f} heavy atoms")
-                    st.markdown(f"**Core rings:** {r.features.get('core_n_rings', 0):.0f}")
-
-                # ── Real-world evidence ──────────────────────────────
-                if r.evidence:
-                    st.markdown("---")
-                    st.markdown("**Real-world evidence from ChEMBL:**")
-                    _render_evidence(r.evidence)
-
-                # Feature breakdown (collapsed by default)
-                with st.popover("Show feature breakdown"):
-                    feat_rows = []
-                    for fname in FEATURE_NAMES:
-                        val = r.features.get(fname, 0.0)
-                        short, desc = FEATURE_DESCRIPTIONS.get(fname, (fname, ""))
-                        feat_rows.append({"Feature": short, "Value": f"{val:.3f}", "Description": desc})
-
-                    import pandas as pd
-                    st.dataframe(
-                        pd.DataFrame(feat_rows),
-                        hide_index=True,
-                        use_container_width=True,
-                    )
+    with col_evidence:
+        st.markdown("**Real-world evidence from ChEMBL:**")
+        if selected_r.evidence:
+            _render_evidence(selected_r.evidence)
+        else:
+            st.caption("No evidence examples found for this position.")
 
     # ── Interpretation panel ──────────────────────────────────────────────
     st.divider()
     st.subheader("Interpretation Guide")
 
-    # Overall molecule summary
     sens_values = [r.sensitivity for r in results]
     spread = max(sens_values) - min(sens_values)
 
@@ -429,7 +524,7 @@ rules apply across kinases, GPCRs, proteases, etc.
 The strongest predictors are scaffold simplicity (smaller cores with fewer rings) and solvent exposure (higher SASA, less steric crowding). Intuitively: when the R-group represents a larger fraction of the molecule's binding interaction, changes there have bigger effects on potency.
 
 **About the evidence examples:**
-Each position shows real matched molecular pairs from ChEMBL where modifications were made at pharmacophore-equivalent positions. **Exact matches** mean the same scaffold core exists in the database. **Similar matches** come from different scaffolds whose attachment point has the same local environment (H-bond donors/acceptors, steric crowding, charge, aromaticity). The ΔpActivity values are measured, not predicted — these are real potency changes from real assays.
+Each position shows real matched molecular pairs from ChEMBL where modifications were made at pharmacophore-equivalent positions. **Exact matches** mean the same scaffold core exists in the database. **Similar matches** come from different scaffolds whose attachment point has the same local environment (H-bond donors/acceptors, steric crowding, charge, aromaticity). The ΔpActivity values are measured, not predicted — these are real potency changes from real assays. Click any target or compound link to view the full ChEMBL record.
     """)
 
 

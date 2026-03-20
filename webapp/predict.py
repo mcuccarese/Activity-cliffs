@@ -44,6 +44,11 @@ class EvidenceExample:
     abs_delta: float         # |ΔpActivity|
     similarity: float        # cosine similarity to query position (0-1)
     source: str              # "exact" if same core, "similar" if neighbor
+    # Enriched fields (populated when evidence index includes them)
+    smiles_from: str = ""                  # full molecule SMILES (before)
+    smiles_to: str = ""                    # full molecule SMILES (after)
+    molecule_chembl_id_from: str = ""      # e.g. "CHEMBL123456"
+    molecule_chembl_id_to: str = ""        # e.g. "CHEMBL789012"
 
 
 @dataclass
@@ -337,22 +342,29 @@ def find_evidence(
     examples: list[EvidenceExample] = []
     seen: set[tuple[str, str, str]] = set()  # (target, rg_from, rg_to)
 
+    def _make_evidence(ex: dict, similarity: float, source: str) -> EvidenceExample:
+        return EvidenceExample(
+            target_id=ex["target_id"],
+            target_name=ex["target_name"],
+            rgroup_from=ex["rgroup_from"],
+            rgroup_to=ex["rgroup_to"],
+            delta_pActivity=ex["delta_pActivity"],
+            abs_delta=ex["abs_delta"],
+            similarity=similarity,
+            source=source,
+            smiles_from=ex.get("smiles_from", ""),
+            smiles_to=ex.get("smiles_to", ""),
+            molecule_chembl_id_from=ex.get("molecule_chembl_id_from", ""),
+            molecule_chembl_id_to=ex.get("molecule_chembl_id_to", ""),
+        )
+
     # 1. Exact match: same core exists in ChEMBL
     if core_smiles in evidence_lookup:
         for ex in evidence_lookup[core_smiles]:
             key = (ex["target_id"], ex["rgroup_from"], ex["rgroup_to"])
             if key not in seen:
                 seen.add(key)
-                examples.append(EvidenceExample(
-                    target_id=ex["target_id"],
-                    target_name=ex["target_name"],
-                    rgroup_from=ex["rgroup_from"],
-                    rgroup_to=ex["rgroup_to"],
-                    delta_pActivity=ex["delta_pActivity"],
-                    abs_delta=ex["abs_delta"],
-                    similarity=1.0,
-                    source="exact",
-                ))
+                examples.append(_make_evidence(ex, 1.0, "exact"))
 
     # 2. Nearest-neighbor: find cores with similar pharmacophore context
     x_scaled = scaler.transform(features.reshape(1, -1))
@@ -372,16 +384,7 @@ def find_evidence(
                 key = (ex["target_id"], ex["rgroup_from"], ex["rgroup_to"])
                 if key not in seen:
                     seen.add(key)
-                    examples.append(EvidenceExample(
-                        target_id=ex["target_id"],
-                        target_name=ex["target_name"],
-                        rgroup_from=ex["rgroup_from"],
-                        rgroup_to=ex["rgroup_to"],
-                        delta_pActivity=ex["delta_pActivity"],
-                        abs_delta=ex["abs_delta"],
-                        similarity=similarity,
-                        source="similar",
-                    ))
+                    examples.append(_make_evidence(ex, similarity, "similar"))
 
     # Sort: exact matches first, then by |delta| descending
     examples.sort(key=lambda e: (0 if e.source == "exact" else 1, -e.abs_delta))

@@ -60,6 +60,7 @@
 | M7a | **Position-level reframe + ceiling test** | ✅ Done (NDCG@3=0.964, Hit@1=57%) | Opus |
 | M7b | **Pharmacophore homology grouping** | ✅ Done (no improvement — targets are too similar) | Opus |
 | M7c | **Webapp: SAR Sensitivity Explorer** | ✅ Done | Sonnet |
+| M8 | **Interactive explainability: clickable bonds, structures, ChEMBL links** | ✅ Done | Sonnet |
 
 ---
 
@@ -98,10 +99,9 @@
 
 ## Current Status
 
-**2026-03-19** — **M7c complete.** SAR Sensitivity Explorer webapp is built and running. All milestones M1–M7c are done. The core deliverable — a tool that takes any SMILES and predicts which positions are most SAR-sensitive — is functional and medchemically credible.
+**2026-03-19** — **M8 complete.** Interactive explainability implemented across all four phases. Webapp now features: clickable position selector (st.pills), full-width molecule SVG with selected position highlighted, rendered molecular structures in evidence cards (full molecules when available, R-group fallback), and clickable ChEMBL links for both targets and compounds. Evidence index rebuilt with compound ChEMBL IDs and full SMILES (71 MB, 100% coverage).
 
 **Potential future work:**
-- Add ChEMBL MMP lookup to show actual historical modifications at each position
 - Deploy to a cloud service for team access
 - Add R-group recommendation (leverage change-type classification from M6b)
 - Publication-quality figures / validation against published SAR studies
@@ -110,31 +110,47 @@
 
 ## Next Steps
 
-### Step: M7a — ✅ DONE (2026-03-19)
-Position-level reframe validated. NDCG@3=0.964, Hit@1=57%, Spearman=0.607. See completed steps above.
+### M8 — ✅ DONE (2026-03-19): Interactive Explainability
 
-### Step: M7b — ✅ DONE (2026-03-19)
-Pharmacophore homology grouping — informative negative. All targets have r>0.91 SAR profiles. No cluster conditioning helps. Position sensitivity is truly target-agnostic.
-
-### Step: M7c — ✅ DONE (2026-03-19)
+### Future steps (if needed)
 **Model:** Sonnet (implementation)
-**Depends on:** M7a model (target-agnostic position sensitivity, 11 features). M7b confirmed no target conditioning needed.
+**Depends on:** M7c webapp, ChEMBL SQLite database
+**Plan:** `M8_INTERACTIVE_EXPLAINABILITY_PLAN.md`
 **Prompt to use:**
 
-> Read CONTINUATION_PLAN.md and PROGRESS_LOG.md. Then implement M7c: the SAR Sensitivity Explorer webapp.
+> Read `PROGRESS_LOG.md`, `M8_INTERACTIVE_EXPLAINABILITY_PLAN.md`, `webapp/app.py`, `webapp/predict.py`, and `scripts/build_evidence_index.py`. Then implement M8 — making the explainability experience interactive. The three user requirements are:
 >
-> Context: M7a showed position-level sensitivity prediction works (NDCG@3=0.964, Hit@1=57%). M7b confirmed this is target-agnostic — no cluster conditioning needed. Build a Streamlit/Gradio webapp that:
+> 1. **Let me click on a particular bond to explore** — currently the molecule SVG is static and positions are shown as expanders
+> 2. **Show me the structures that provided supporting evidence** — currently evidence shows R-group SMILES as monospace text, not rendered structures
+> 3. **Accurately link out to the appropriate source of information** — currently target names are plain text with no links to ChEMBL
 >
-> 1. Takes a SMILES input
-> 2. Generates a 3D conformer (ETKDG)
-> 3. Fragments at all single-cut positions (rdMMPA)
-> 4. Computes 3D pharmacophore context features at each attachment point
-> 5. Predicts position sensitivity using the trained HGB model
-> 6. Displays: molecule with positions colored by sensitivity + ranked list per position
+> Implement in this order (Phase 3 first because it produces the data the other phases need):
 >
-> Train a final HGB model on ALL 598K position data rows (no holdout — the leave-one-target-out already validated generalization). Save as a pickle for the webapp.
+> **Phase 3** (data enrichment): Modify `build_evidence_index.py` to also store `smiles_from`, `smiles_to`, and compound ChEMBL IDs (`molecule_chembl_id_from/to`) from the ChEMBL SQLite database. Add `--chembl-sqlite` CLI option. Update `EvidenceExample` dataclass in `predict.py` to include these new fields (with empty-string defaults for backward compat). Then rebuild the evidence index by running the script.
 >
-> Key files: scripts/prepare_position_data.py (data pipeline), evolve/position_ceiling.py (model training pattern), src/activity_cliffs/features/context_3d.py (3D feature computation).
+> **Phase 1** (clickable bonds): Redesign `app.py` layout: molecule SVG full-width at top, position selection via `st.pills` or horizontal radio buttons below it (not expanders), and a single detail panel that updates when you select a position. Modify `draw_molecule_with_sensitivity` to accept an optional `selected_idx` that gets extra visual emphasis (thicker outline, larger radius). Store selection in `st.session_state`.
+>
+> **Phase 2** (structure rendering): In each evidence card, render the actual molecular structures side-by-side using RDKit's `MolDraw2DSVG`. If `smiles_from`/`smiles_to` are available (from Phase 3), render the full molecules with the R-group region highlighted. Otherwise fall back to rendering the R-group fragments with `[*]` attachment point. Show "before → after" layout with an arrow between them.
+>
+> **Phase 4** (linkouts): Add clickable hyperlinks throughout the evidence cards:
+> - Target names link to `https://www.ebi.ac.uk/chembl/target_report_card/CHEMBLXXX`
+> - Compound IDs link to `https://www.ebi.ac.uk/chembl/compound_report_card/CHEMBLXXX`
+> - All links open in new tabs (`target="_blank"`)
+>
+> Key file paths:
+> - ChEMBL SQLite: `D:\Mike project data\Activity cliffs\chembl_36\chembl_36_sqlite\chembl_36.db`
+> - MMP data: `outputs/mmps/all_mmps.parquet` (columns: mol_from, mol_to, smiles_from, smiles_to, core_smiles, rgroup_from, rgroup_to, target_chembl_id, delta_pActivity, abs_delta_pActivity)
+> - `mol_from`/`mol_to` are `molregno` values — join to `molecule_dictionary.molregno` → `molecule_dictionary.chembl_id` in ChEMBL SQLite to get compound ChEMBL IDs
+> - Current evidence index: `webapp/model/evidence_index.pkl`
+> - 3D context features: `outputs/features/context_3d.parquet`
+>
+> Test by running `streamlit run webapp/app.py` after each phase. Check Streamlit version first (`pip show streamlit`) — if < 1.37, use `st.radio(horizontal=True)` instead of `st.pills`.
+
+### Previous steps (done)
+
+- M7a — ✅ DONE (2026-03-19): Position-level reframe validated
+- M7b — ✅ DONE (2026-03-19): Pharmacophore homology grouping — informative negative
+- M7c — ✅ DONE (2026-03-19): SAR Sensitivity Explorer webapp
 
 ---
 
