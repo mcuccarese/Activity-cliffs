@@ -63,6 +63,8 @@ class PositionResult:
     percentile: float        # percentile vs training data (0-100)
     features: dict[str, float] = field(default_factory=dict)
     evidence: list[EvidenceExample] = field(default_factory=list)
+    attribution: dict[str, float] = field(default_factory=dict)  # SHAP values per feature
+    base_value: float = 0.0  # model expected value (SHAP baseline)
 
 
 def _load_model():
@@ -79,6 +81,21 @@ def get_model():
     if _MODEL is None:
         _MODEL = _load_model()
     return _MODEL
+
+
+_EXPLAINER = None
+
+
+def get_explainer():
+    """Lazy-load the SHAP TreeExplainer (cached after first call)."""
+    global _EXPLAINER
+    if _EXPLAINER is None:
+        try:
+            import shap
+            _EXPLAINER = shap.TreeExplainer(get_model())
+        except Exception:
+            _EXPLAINER = None
+    return _EXPLAINER
 
 
 def _core_n_heavy(smi: str) -> int:
@@ -266,6 +283,22 @@ def predict_positions(smiles: str) -> list[PositionResult]:
 
     # Sort by sensitivity (highest first)
     results.sort(key=lambda r: r.sensitivity, reverse=True)
+
+    # Compute SHAP attributions in batch (explains what drove each prediction)
+    explainer = get_explainer()
+    if explainer is not None:
+        try:
+            X_batch = np.array(
+                [[r.features[fn] for fn in FEATURE_NAMES] for r in results],
+                dtype=np.float32,
+            )
+            shap_vals = explainer.shap_values(X_batch)  # shape (n_positions, n_features)
+            base_val = float(np.asarray(explainer.expected_value).ravel()[0])
+            for r, sv in zip(results, shap_vals):
+                r.attribution = {fn: float(sv[i]) for i, fn in enumerate(FEATURE_NAMES)}
+                r.base_value = base_val
+        except Exception:
+            pass  # attribution is non-critical; evidence + features still displayed
 
     # Attach evidence examples from real ChEMBL MMPs
     for r in results:

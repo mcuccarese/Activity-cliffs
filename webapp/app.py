@@ -31,6 +31,7 @@ from webapp.predict import (
     PositionResult,
     EvidenceExample,
     FEATURE_NAMES,
+    get_explainer,
 )
 
 # ── Page config ──────────────────────────────────────────────────────────────
@@ -317,6 +318,74 @@ def _render_evidence(evidence: list[EvidenceExample]) -> None:
         st.caption("No evidence examples found for this position.")
 
 
+# ── SHAP attribution panel ────────────────────────────────────────────────────
+
+def _render_attribution(result: PositionResult) -> None:
+    """Render per-feature SHAP contributions as a horizontal bar chart.
+
+    Red bars = feature raises predicted sensitivity.
+    Blue bars = feature lowers predicted sensitivity.
+    Bar width is proportional to the absolute SHAP value.
+    """
+    if not result.attribution:
+        # Fall back to plain feature table when SHAP is unavailable
+        feat_rows = []
+        for fname in FEATURE_NAMES:
+            val = result.features.get(fname, 0.0)
+            short, desc = FEATURE_DESCRIPTIONS.get(fname, (fname, ""))
+            feat_rows.append({"Feature": short, "Value": f"{val:.3f}", "Description": desc})
+        st.dataframe(pd.DataFrame(feat_rows), hide_index=True, use_container_width=True)
+        return
+
+    items = sorted(result.attribution.items(), key=lambda x: abs(x[1]), reverse=True)
+    max_abs = max(abs(v) for _, v in items) if items else 1.0
+    delta = result.sensitivity - result.base_value
+    sign = "+" if delta >= 0 else ""
+
+    header = (
+        f'<div style="font-size:0.82em;color:#6b7280;margin-bottom:8px;">'
+        f"Model baseline: <b>{result.base_value:.2f}</b> &nbsp;→&nbsp; "
+        f"This position: <b>{result.sensitivity:.2f}</b> "
+        f'<span style="color:{"#b91c1c" if delta >= 0 else "#1d4ed8"};">'
+        f"({sign}{delta:.2f})</span></div>"
+    )
+
+    rows = [header]
+    for fname, shap_val in items:
+        if abs(shap_val) < 0.005:
+            continue
+        short_name, desc = FEATURE_DESCRIPTIONS.get(fname, (fname, ""))
+        feat_val = result.features.get(fname, 0.0)
+        bar_pct = abs(shap_val) / max_abs * 100
+
+        if shap_val > 0:
+            bar_color = "#fca5a5"   # light red fill
+            text_color = "#b91c1c"  # dark red label
+            arrow = "▲"
+        else:
+            bar_color = "#93c5fd"   # light blue fill
+            text_color = "#1d4ed8"  # dark blue label
+            arrow = "▼"
+
+        contribution_str = f"{arrow} {'+' if shap_val >= 0 else ''}{shap_val:.3f}"
+
+        rows.append(
+            f'<div style="margin-bottom:6px;" title="{desc} — value: {feat_val:.3f}">'
+            f'  <div style="display:flex;justify-content:space-between;align-items:baseline;">'
+            f'    <span style="font-size:0.82em;color:#374151;">{short_name}</span>'
+            f'    <span style="font-size:0.82em;font-weight:600;color:{text_color};'
+            f'min-width:60px;text-align:right;">{contribution_str}</span>'
+            f"  </div>"
+            f'  <div style="background:#f3f4f6;border-radius:3px;height:8px;margin-top:2px;">'
+            f'    <div style="background:{bar_color};width:{bar_pct:.0f}%;height:100%;'
+            f'border-radius:3px;"></div>'
+            f"  </div>"
+            f"</div>"
+        )
+
+    st.markdown("".join(rows), unsafe_allow_html=True)
+
+
 # ── Position pill badge ───────────────────────────────────────────────────────
 
 def _badge(label: str) -> str:
@@ -479,18 +548,12 @@ rules apply across kinases, GPCRs, proteases, etc.
     col_features, col_evidence = st.columns([1, 1.6])
 
     with col_features:
-        st.markdown("**Feature breakdown**")
-        feat_rows = []
-        for fname in FEATURE_NAMES:
-            val = selected_r.features.get(fname, 0.0)
-            short, desc = FEATURE_DESCRIPTIONS.get(fname, (fname, ""))
-            feat_rows.append({"Feature": short, "Value": f"{val:.3f}", "Description": desc})
-
-        st.dataframe(
-            pd.DataFrame(feat_rows),
-            hide_index=True,
-            use_container_width=True,
-        )
+        if selected_r.attribution:
+            st.markdown("**What drove this prediction** *(SHAP feature contributions)*")
+            st.caption("▲ Red = raises sensitivity · ▼ Blue = lowers sensitivity · bar width = contribution magnitude")
+        else:
+            st.markdown("**Feature values**")
+        _render_attribution(selected_r)
 
     with col_evidence:
         st.markdown("**Real-world evidence from ChEMBL:**")
@@ -528,6 +591,9 @@ rules apply across kinases, GPCRs, proteases, etc.
 
 **What makes a position sensitive?**
 The strongest predictors are scaffold simplicity (smaller cores with fewer rings) and solvent exposure (higher SASA, less steric crowding). Intuitively: when the R-group represents a larger fraction of the molecule's binding interaction, changes there have bigger effects on potency.
+
+**Reading the SHAP attribution chart:**
+The red/blue bars show exactly which features pushed the model's prediction above or below its baseline. A large red bar for "Gasteiger partial charge" means this position is predicted sensitive *because* it sits at an electron-rich/poor attachment point — not because of size or H-bonding. This backtracking is exact for tree-based models (no approximation), so the bars tell you precisely what the model "saw".
 
 **About the evidence examples:**
 Each position shows real matched molecular pairs from ChEMBL where modifications were made at pharmacophore-equivalent positions. **Exact matches** mean the same scaffold core exists in the database. **Similar matches** come from different scaffolds whose attachment point has the same local environment (H-bond donors/acceptors, steric crowding, charge, aromaticity). The ΔpActivity values are measured, not predicted — these are real potency changes from real assays. Click any target or compound link to view the full ChEMBL record.
