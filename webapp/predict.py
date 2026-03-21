@@ -19,13 +19,17 @@ from rdkit import Chem
 from rdkit.Chem import AllChem, rdMMPA
 
 # Import the 3D context feature computation from the main package
+import json
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from activity_cliffs.features.context_3d import compute_3d_context, CONTEXT_3D_FEATURES
+from activity_cliffs.features.change_type import CHANGE_TYPE_NAMES
 
 
 MODEL_PATH = Path(__file__).parent / "model" / "position_hgb.pkl"
 EVIDENCE_INDEX_PATH = Path(__file__).parent / "model" / "evidence_index.pkl"
+CHANGE_TYPE_MODEL_PATH = Path(__file__).parent / "model" / "change_type_hgb.pkl"
+CHANGE_TYPE_META_PATH  = Path(__file__).parent / "model" / "change_type_meta.json"
 
 # Feature order must match training data
 FEATURE_NAMES = [
@@ -52,6 +56,15 @@ class EvidenceExample:
 
 
 @dataclass
+class ChangeTypeRec:
+    """A recommended R-group property change at a position, ranked by predicted cliff magnitude."""
+    label: str            # e.g. "Lipophilicity change"
+    axis: str             # e.g. "delta_lipophilicity" (matches CHANGE_TYPE_NAMES)
+    cliff_score: float    # predicted |ΔpActivity| at ±1σ of this property axis
+    rank: int             # 1 = most likely to cause a large activity change
+
+
+@dataclass
 class PositionResult:
     """Result for one fragmentable position on the input molecule."""
     atom_idx: int            # atom index in original mol (core-side of cut bond)
@@ -65,6 +78,7 @@ class PositionResult:
     evidence: list[EvidenceExample] = field(default_factory=list)
     attribution: dict[str, float] = field(default_factory=dict)  # SHAP values per feature
     base_value: float = 0.0  # model expected value (SHAP baseline)
+    change_type_recs: list[ChangeTypeRec] = field(default_factory=list)  # M9 recommendations
 
 
 def _load_model():
@@ -96,6 +110,81 @@ def get_explainer():
         except Exception:
             _EXPLAINER = None
     return _EXPLAINER
+
+
+_CT_MODEL = None
+_CT_META: dict | None = None
+
+
+def get_change_type_model() -> tuple | None:
+    """Lazy-load the M9 change-type cliff model and its metadata."""
+    global _CT_MODEL, _CT_META
+    if _CT_MODEL is None:
+        if not CHANGE_TYPE_MODEL_PATH.exists():
+            return None
+        with open(CHANGE_TYPE_MODEL_PATH, "rb") as f:
+            _CT_MODEL = pickle.load(f)
+        with open(CHANGE_TYPE_META_PATH) as f:
+            _CT_META = json.load(f)
+    return _CT_MODEL, _CT_META
+
+
+def predict_change_types(context_features: np.ndarray) -> list[ChangeTypeRec]:
+    """
+    Rank R-group property change types by predicted cliff magnitude at this position.
+
+    For each of the 11 Δ-prop axes, probes the model at +1σ and −1σ (data-derived),
+    takes the maximum predicted |ΔpActivity|, and ranks axes by that score.
+
+    No direction is asserted — this is a Topliss-style "start here" signal: which
+    type of modification at this pharmacophore context causes the largest activity swings.
+
+    Args:
+        context_features: float32 array of shape (9,) — pharmacophore context at the
+                          attachment point (same order as CONTEXT_3D_FEATURES).
+
+    Returns:
+        List of ChangeTypeRec sorted by cliff_score descending (most informative first).
+    """
+    result = get_change_type_model()
+    if result is None:
+        return []
+    ct_model, meta = result
+
+    sigmas: dict[str, float] = meta["delta_prop_sigmas"]
+    axis_labels: dict[str, str] = meta["axis_labels"]
+    n_prop = len(CHANGE_TYPE_NAMES)
+
+    recs: list[ChangeTypeRec] = []
+    for j, ax_name in enumerate(CHANGE_TYPE_NAMES):
+        sigma = sigmas.get(ax_name, 1.0)
+        if sigma < 1e-6:
+            sigma = 1.0
+
+        # Build +1σ and −1σ probe vectors
+        delta_pos = np.zeros(n_prop, dtype=np.float32)
+        delta_pos[j] = sigma
+        delta_neg = np.zeros(n_prop, dtype=np.float32)
+        delta_neg[j] = -sigma
+
+        x_pos = np.concatenate([context_features, delta_pos]).reshape(1, -1)
+        x_neg = np.concatenate([context_features, delta_neg]).reshape(1, -1)
+
+        pred_pos = max(0.0, float(ct_model.predict(x_pos)[0]))
+        pred_neg = max(0.0, float(ct_model.predict(x_neg)[0]))
+        cliff_score = max(pred_pos, pred_neg)
+
+        recs.append(ChangeTypeRec(
+            label=axis_labels.get(ax_name, ax_name),
+            axis=ax_name,
+            cliff_score=cliff_score,
+            rank=0,  # filled below
+        ))
+
+    recs.sort(key=lambda r: r.cliff_score, reverse=True)
+    for i, r in enumerate(recs):
+        r.rank = i + 1
+    return recs
 
 
 def _core_n_heavy(smi: str) -> int:
@@ -299,6 +388,15 @@ def predict_positions(smiles: str) -> list[PositionResult]:
                 r.base_value = base_val
         except Exception:
             pass  # attribution is non-critical; evidence + features still displayed
+
+    # M9: Change type recommendations (which property modification is most cliff-forming)
+    if CHANGE_TYPE_MODEL_PATH.exists():
+        for r in results:
+            ctx_vec = np.array(
+                [r.features[f"ctx_{c}"] for c in CONTEXT_3D_FEATURES],
+                dtype=np.float32,
+            )
+            r.change_type_recs = predict_change_types(ctx_vec)
 
     # Attach evidence examples from real ChEMBL MMPs
     for r in results:
