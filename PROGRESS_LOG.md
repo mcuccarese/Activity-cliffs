@@ -42,6 +42,9 @@
 | **Final position model** | `webapp/model/position_hgb.pkl` | ✅ M7c — HGB trained on all 598K rows |
 | **SAR Sensitivity Explorer** | `webapp/app.py` | ✅ M7c — Streamlit webapp with molecule coloring |
 | **Prediction pipeline** | `webapp/predict.py` | ✅ M7c — SMILES → fragment → 3D features → predict |
+| **Change-type training** | `scripts/train_change_type_model.py` | ✅ M9 — LOO Spearman 0.268 ± 0.068 |
+| **Change-type model** | `webapp/model/change_type_hgb.pkl` | ✅ M9 — HGB on 5M MMPs (1 MB) |
+| **Change-type webapp** | `webapp/app.py` (3-col detail panel) | ✅ M9 — orange bar chart, per-position recommendations |
 
 ---
 
@@ -61,6 +64,7 @@
 | M7b | **Pharmacophore homology grouping** | ✅ Done (no improvement — targets are too similar) | Opus |
 | M7c | **Webapp: SAR Sensitivity Explorer** | ✅ Done | Sonnet |
 | M8 | **Interactive explainability: clickable bonds, structures, ChEMBL links** | ✅ Done | Sonnet |
+| M9 | **Change-type recommendations: Topliss-style "start here" per position** | ✅ Done (LOO Spearman 0.268 ± 0.068) | Sonnet + Opus |
 
 ---
 
@@ -95,56 +99,25 @@
 | 2026-03-19 | M7b: Pharmacophore homology grouping — **no improvement (informative negative)** | Built 28-dim SAR profile per target (14 change-type categories × {cliff_rate, mean_|Δp|}). **Targets are extremely similar:** pairwise Pearson mean=0.983, min=0.912, all >0.9. Hierarchical clustering (Ward linkage) tested k=5-8. **Experiment A (global + cluster_id):** best k=5 NDCG@3=0.9597 vs baseline 0.9593 — within noise (+0.0004). **Experiment A2 (one-hot clusters):** best k=7 NDCG@3=0.9601 (+0.0008). **Experiment B (within-cluster separate models):** all HURT performance (k=5: 0.9549, k=8: 0.9518) — less training data, no compensating signal. **Experiment C (SAR profile as features):** 0.9593 (identical to baseline). **Conclusion:** Position-level SAR sensitivity is governed by local 3D pharmacophore context, not target identity. The rules are truly general — all 50 targets respond to structural changes the same way at the position level. No target grouping needed; proceed directly to webapp with the target-agnostic model. |
 | 2026-03-19 | M7c: SAR Sensitivity Explorer webapp — **complete** | Built Streamlit webapp (`webapp/app.py`) with prediction pipeline (`webapp/predict.py`). Trained final HGB model on all 598K position rows (1 MB pickle). Pipeline: SMILES → find all fragmentable bonds → fragment → compute 3D pharmacophore context (9 features) + core topology (2 features) → HGB predict sensitivity → rank positions. Molecule visualization: 2D SVG with blue→red atom/bond coloring + rank labels (#1, #2...). Position ranking with expandable feature breakdowns per position. **Permutation feature importances:** core_n_heavy (45.4%), gasteiger_charge (14.1%), SASA (10.7%), core_n_rings (8.5%), n_aromatic_4A (4.6%), n_heavy_4A (4.6%). **Medchem validation:** Imatinib correctly identifies piperazine arm > methyl > hinge binder; Erlotinib highlights aniline bridge > acetylene tail > methoxyethoxy chains; Celecoxib flags pyrazole-tolyl junction; Diclofenac prioritizes chlorine positions; small molecules (aniline, biphenyl) show appropriately high sensitivity. Model shows larger cores → lower sensitivity (correct: R-group is smaller fraction of binding). 8 example drugs included. Run: `streamlit run webapp/app.py`. |
 
+| 2026-03-20 | M9: Change-type recommendations — **complete** | Built `scripts/train_change_type_model.py` (20D input: 9D pharmacophore context + 11D Δ R-group properties → predict |ΔpActivity|). Trained on 5M stratified-sampled MMPs across 50 targets in 21s. **LOO-target Spearman: mean=0.268 ± 0.068, min=0.142, max=0.417.** All 50 targets positively correlated — model never anti-predicts. This is a transformation-level prediction (harder than position-level: individual MMP cliff magnitude, not just average sensitivity). Inference: ±1σ probing along 11 Δ-prop axes, rank by max predicted |Δ|. **Medchem sanity checks passed:** (1) Imatinib: 9/10 unique rankings across positions; methyl→DFG loop flags H-bond acceptor change, pyrimidine hinge flags aromatic ring change. (2) Diclofenac: **lipophilicity change** ranked #1 at chlorine positions (score 1.02) and carboxylate (1.03) — the textbook cliff-forming axes for NSAIDs. (3) Celecoxib: **EDG count change** ranked #1 at tolyl-pyrazole junction — first time EDG beats size, correct for the COX-2 selectivity pocket. Sanity check on archetypal contexts: hydrophobic pocket → EDG count (0.68); donor-rich → size (0.58); crowded site → size (0.73). Webapp: 3-column detail panel (SHAP | change types | evidence), orange bar chart via `_render_change_type_recs()`. Model: `webapp/model/change_type_hgb.pkl` (1 MB), metadata: `webapp/model/change_type_meta.json`. |
+
 ---
 
 ## Current Status
 
-**2026-03-19** — **M8 complete.** Interactive explainability implemented across all four phases. Webapp now features: clickable position selector (st.pills), full-width molecule SVG with selected position highlighted, rendered molecular structures in evidence cards (full molecules when available, R-group fallback), and clickable ChEMBL links for both targets and compounds. Evidence index rebuilt with compound ChEMBL IDs and full SMILES (71 MB, 100% coverage).
+**2026-03-20** — **M9 complete.** Change-type recommendation model trained and integrated into the webapp. Each position now shows not only HOW sensitive it is (position model, M7) but also WHAT TYPE of structural modification is most likely to cause a large activity swing (change-type model, M9). The webapp has a 3-column detail panel: SHAP attributions | change-type recommendations | real-world evidence. LOO-target Spearman = 0.268 ± 0.068 — modest but statistically significant for transformation-level prediction without protein features. Medchem validation on 3 drugs shows genuine context-dependent variation: Imatinib (size-dominated), Diclofenac (lipophilicity at chlorines/carboxylate), Celecoxib (EDG at tolyl junction).
 
 **Potential future work:**
 - Deploy to a cloud service for team access
-- Add R-group recommendation (leverage change-type classification from M6b)
 - Publication-quality figures / validation against published SAR studies
+- Protein-side features to break the transformation-level ceiling
+- Specific R-group suggestions (not just property type) via retrieval from ChEMBL MMP database
 
 ---
 
 ## Next Steps
 
-### M8 — ✅ DONE (2026-03-19): Interactive Explainability
-
-### Future steps (if needed)
-**Model:** Sonnet (implementation)
-**Depends on:** M7c webapp, ChEMBL SQLite database
-**Plan:** `M8_INTERACTIVE_EXPLAINABILITY_PLAN.md`
-**Prompt to use:**
-
-> Read `PROGRESS_LOG.md`, `M8_INTERACTIVE_EXPLAINABILITY_PLAN.md`, `webapp/app.py`, `webapp/predict.py`, and `scripts/build_evidence_index.py`. Then implement M8 — making the explainability experience interactive. The three user requirements are:
->
-> 1. **Let me click on a particular bond to explore** — currently the molecule SVG is static and positions are shown as expanders
-> 2. **Show me the structures that provided supporting evidence** — currently evidence shows R-group SMILES as monospace text, not rendered structures
-> 3. **Accurately link out to the appropriate source of information** — currently target names are plain text with no links to ChEMBL
->
-> Implement in this order (Phase 3 first because it produces the data the other phases need):
->
-> **Phase 3** (data enrichment): Modify `build_evidence_index.py` to also store `smiles_from`, `smiles_to`, and compound ChEMBL IDs (`molecule_chembl_id_from/to`) from the ChEMBL SQLite database. Add `--chembl-sqlite` CLI option. Update `EvidenceExample` dataclass in `predict.py` to include these new fields (with empty-string defaults for backward compat). Then rebuild the evidence index by running the script.
->
-> **Phase 1** (clickable bonds): Redesign `app.py` layout: molecule SVG full-width at top, position selection via `st.pills` or horizontal radio buttons below it (not expanders), and a single detail panel that updates when you select a position. Modify `draw_molecule_with_sensitivity` to accept an optional `selected_idx` that gets extra visual emphasis (thicker outline, larger radius). Store selection in `st.session_state`.
->
-> **Phase 2** (structure rendering): In each evidence card, render the actual molecular structures side-by-side using RDKit's `MolDraw2DSVG`. If `smiles_from`/`smiles_to` are available (from Phase 3), render the full molecules with the R-group region highlighted. Otherwise fall back to rendering the R-group fragments with `[*]` attachment point. Show "before → after" layout with an arrow between them.
->
-> **Phase 4** (linkouts): Add clickable hyperlinks throughout the evidence cards:
-> - Target names link to `https://www.ebi.ac.uk/chembl/target_report_card/CHEMBLXXX`
-> - Compound IDs link to `https://www.ebi.ac.uk/chembl/compound_report_card/CHEMBLXXX`
-> - All links open in new tabs (`target="_blank"`)
->
-> Key file paths:
-> - ChEMBL SQLite: `D:\Mike project data\Activity cliffs\chembl_36\chembl_36_sqlite\chembl_36.db`
-> - MMP data: `outputs/mmps/all_mmps.parquet` (columns: mol_from, mol_to, smiles_from, smiles_to, core_smiles, rgroup_from, rgroup_to, target_chembl_id, delta_pActivity, abs_delta_pActivity)
-> - `mol_from`/`mol_to` are `molregno` values — join to `molecule_dictionary.molregno` → `molecule_dictionary.chembl_id` in ChEMBL SQLite to get compound ChEMBL IDs
-> - Current evidence index: `webapp/model/evidence_index.pkl`
-> - 3D context features: `outputs/features/context_3d.parquet`
->
-> Test by running `streamlit run webapp/app.py` after each phase. Check Streamlit version first (`pip show streamlit`) — if < 1.37, use `st.radio(horizontal=True)` instead of `st.pills`.
+### M9 — ✅ DONE (2026-03-20): Change-Type Recommendations
 
 ### Previous steps (done)
 

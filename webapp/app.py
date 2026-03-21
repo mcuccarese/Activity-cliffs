@@ -30,8 +30,10 @@ from webapp.predict import (
     sensitivity_to_label,
     PositionResult,
     EvidenceExample,
+    ChangeTypeRec,
     FEATURE_NAMES,
     get_explainer,
+    CHANGE_TYPE_META_PATH,
 )
 
 # ── Page config ──────────────────────────────────────────────────────────────
@@ -386,6 +388,52 @@ def _render_attribution(result: PositionResult) -> None:
     st.markdown("".join(rows), unsafe_allow_html=True)
 
 
+# ── Change type recommendation panel ────────────────────────────────────────
+
+def _render_change_type_recs(recs: list[ChangeTypeRec], n_show: int = 8) -> None:
+    """Render ranked change type recommendations as a cliff-magnitude bar chart.
+
+    Bar width and color intensity represent predicted |ΔpActivity| at ±1σ of that
+    property axis — i.e., how much activity tends to swing when that property is
+    changed.  No direction is asserted: this is a 'start here' signal only.
+    """
+    if not recs:
+        st.caption("Change type model not yet available — run train_change_type_model.py.")
+        return
+
+    top = recs[:n_show]
+    max_score = max(r.cliff_score for r in top) if top else 1.0
+    if max_score < 1e-6:
+        max_score = 1.0
+
+    rows: list[str] = []
+    for r in top:
+        pct = r.cliff_score / max_score * 100
+        # Orange intensity scaled by cliff score (white → #f97316 orange)
+        intensity = r.cliff_score / max_score
+        r_ch = int(255)
+        g_ch = int(255 - intensity * (255 - 115))   # 255 → 115
+        b_ch = int(255 - intensity * 255)            # 255 → 0
+        bar_color = f"rgb({r_ch},{g_ch},{b_ch})"
+        text_color = "#9a3412" if intensity > 0.5 else "#374151"
+
+        rows.append(
+            f'<div style="margin-bottom:6px;">'
+            f'  <div style="display:flex;justify-content:space-between;align-items:baseline;">'
+            f'    <span style="font-size:0.82em;color:#374151;">{r.rank}. {r.label}</span>'
+            f'    <span style="font-size:0.82em;font-weight:600;color:{text_color};">'
+            f'|Δ| ≈ {r.cliff_score:.2f}</span>'
+            f"  </div>"
+            f'  <div style="background:#f3f4f6;border-radius:3px;height:8px;margin-top:2px;">'
+            f'    <div style="background:{bar_color};width:{pct:.0f}%;height:100%;'
+            f'border-radius:3px;"></div>'
+            f"  </div>"
+            f"</div>"
+        )
+
+    st.markdown("".join(rows), unsafe_allow_html=True)
+
+
 # ── Position pill badge ───────────────────────────────────────────────────────
 
 def _badge(label: str) -> str:
@@ -436,6 +484,18 @@ rules apply across kinases, GPCRs, proteases, etc.
             for name, val in sorted(imps.items(), key=lambda x: -x[1])[:5]:
                 short_name = FEATURE_DESCRIPTIONS.get(name, (name, ""))[0]
                 st.markdown(f"- **{short_name}**: {val:.1%}")
+
+        if CHANGE_TYPE_META_PATH.exists():
+            st.divider()
+            with open(CHANGE_TYPE_META_PATH) as _f:
+                _ct_meta = json.load(_f)
+            loo_mean = _ct_meta.get("loo_spearman_mean")
+            loo_std  = _ct_meta.get("loo_spearman_std")
+            n_rows   = _ct_meta.get("n_training_rows", 0)
+            st.markdown("**Change type model (M9):**")
+            st.markdown(f"Trained on {n_rows:,} MMPs")
+            if loo_mean is not None:
+                st.markdown(f"LOO-target Spearman = {loo_mean:.3f} ± {loo_std:.3f}")
 
         st.divider()
         st.markdown(
@@ -545,7 +605,7 @@ rules apply across kinases, GPCRs, proteases, etc.
     st.caption(f"R-group at this position: `{selected_r.rgroup_smiles}`  |  "
                f"Cut bond: atom {selected_r.atom_idx} — atom {selected_r.neighbor_idx}")
 
-    col_features, col_evidence = st.columns([1, 1.6])
+    col_features, col_change, col_evidence = st.columns([1, 0.9, 1.6])
 
     with col_features:
         if selected_r.attribution:
@@ -554,6 +614,11 @@ rules apply across kinases, GPCRs, proteases, etc.
         else:
             st.markdown("**Feature values**")
         _render_attribution(selected_r)
+
+    with col_change:
+        st.markdown("**Recommended change types** *(cliff likelihood)*")
+        st.caption("Which property modification causes the largest activity swings at this pharmacophore context · bar = predicted |Δ|")
+        _render_change_type_recs(selected_r.change_type_recs)
 
     with col_evidence:
         st.markdown("**Real-world evidence from ChEMBL:**")
@@ -594,6 +659,9 @@ The strongest predictors are scaffold simplicity (smaller cores with fewer rings
 
 **Reading the SHAP attribution chart:**
 The red/blue bars show exactly which features pushed the model's prediction above or below its baseline. A large red bar for "Gasteiger partial charge" means this position is predicted sensitive *because* it sits at an electron-rich/poor attachment point — not because of size or H-bonding. This backtracking is exact for tree-based models (no approximation), so the bars tell you precisely what the model "saw".
+
+**Reading the change type recommendations:**
+The middle panel ranks which *class* of R-group modification is most likely to cause a large activity change at this position — not which direction (better or worse), just which type of change will reveal the most SAR. This is a pharmacophore-conditioned Topliss-style signal: the same property change (e.g., adding EWG character) scores differently at an electron-rich vs. electron-poor attachment. The model was trained on 5M matched molecular pairs predicting |ΔpActivity|, so the scores reflect what ChEMBL data says actually moves the needle at positions with this local environment. Use it as a "start here first" guide: modify the top-ranked property type and you are most likely to uncover a steep SAR cliff — for better or worse.
 
 **About the evidence examples:**
 Each position shows real matched molecular pairs from ChEMBL where modifications were made at pharmacophore-equivalent positions. **Exact matches** mean the same scaffold core exists in the database. **Similar matches** come from different scaffolds whose attachment point has the same local environment (H-bond donors/acceptors, steric crowding, charge, aromaticity). The ΔpActivity values are measured, not predicted — these are real potency changes from real assays. Click any target or compound link to view the full ChEMBL record.
