@@ -23,7 +23,17 @@ import json
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from activity_cliffs.features.context_3d import compute_3d_context, CONTEXT_3D_FEATURES
-from activity_cliffs.features.change_type import CHANGE_TYPE_NAMES
+try:
+    from activity_cliffs.features.change_type import CHANGE_TYPE_NAMES
+except Exception:
+    # Fallback: define names inline so the app doesn't crash if the import fails
+    CHANGE_TYPE_NAMES = [
+        f"delta_{n}" for n in [
+            "has_ewg", "has_edg", "ewg_count", "edg_count",
+            "n_hbd", "n_hba", "lipophilicity", "heavy_atoms",
+            "n_rings", "n_arom_rings", "fsp3",
+        ]
+    ]
 
 
 MODEL_PATH = Path(__file__).parent / "model" / "position_hgb.pkl"
@@ -429,8 +439,11 @@ def _load_evidence_index():
     """Load the pre-built evidence index (BallTree + evidence lookup)."""
     if not EVIDENCE_INDEX_PATH.exists():
         return None
-    with open(EVIDENCE_INDEX_PATH, "rb") as f:
-        return pickle.load(f)
+    try:
+        with open(EVIDENCE_INDEX_PATH, "rb") as f:
+            return pickle.load(f)
+    except Exception:
+        return None
 
 
 def get_evidence_index():
