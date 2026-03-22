@@ -22,7 +22,7 @@
 ## User Context
 - Domain expert in medicinal chemistry, not a coder
 - Wants exact prompts and model recommendations at each step
-- Manages Claude Pro usage — use Sonnet by default, Opus for science/architecture only
+- Claude Max plan — Opus is fine for all tasks, no need to conserve usage
 - Hardware: Windows 11 Pro, RTX 4070
 
 ## Project Architecture
